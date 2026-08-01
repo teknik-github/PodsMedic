@@ -41,6 +41,8 @@ const (
 	CmdRightsize Command = "rightsize"
 	// CmdNodes reports the health of the machines under the workloads.
 	CmdNodes Command = "nodes"
+	// CmdDigest previews the daily summary without disturbing its schedule.
+	CmdDigest Command = "digest"
 )
 
 // Question is one inbound message, already parsed and authorised.
@@ -120,6 +122,8 @@ func Parse(text string) (Command, string) {
 		return CmdRightsize, rest
 	case "nodes", "node":
 		return CmdNodes, rest
+	case "digest", "summary", "daily":
+		return CmdDigest, rest
 	case "ask":
 		return CmdAsk, rest
 	default:
@@ -208,6 +212,7 @@ Commands (answered from local state, no LLM cost):
 /heals      recent automated changes, newest first
 /playbook   verified remedies I can replay without asking the model
 /nodes      health of the machines under your workloads
+/digest     preview today's daily summary (it still sends on schedule)
 /rightsize  containers whose requests do not match what they use (add "html" for a document)
 /export     the playbook as a document to study (add "html" for a printable one)
 /help       this message

@@ -154,7 +154,7 @@ It avoids touching the node at all. The registry binds `hostPort: 5000` to `host
 127.0.0.1`, so it sits on the node's own loopback, where containerd treats a registry as
 insecure by default and pulls over plain HTTP with no `registries.yaml` and no
 `--insecure-registry` flag. Loopback rather than `0.0.0.0` also keeps it off your LAN, which
-matters because it has no authentication. Pushing works because `kubectl port-forward`
+matters because it speaks plain HTTP. Pushing works because `kubectl port-forward`
 reaches the pod directly rather than through the host port.
 
 Single-node only: on a multi-node cluster just one node would hold the images.
@@ -789,9 +789,18 @@ purpose.
 
 **Off by default, and on its own port.** It does not join the metrics server, and
 that separation is deliberate: `/metrics` is safe to hand a scraper, whereas this
-page lists every workload name, every failure, and every change podsmedic made — and
-it has **no authentication**. It is meant to be reached through `kubectl port-forward`
-and nothing else. There is no Service and no Ingress for it on purpose.
+page lists every workload name, every failure, and every change podsmedic made.
+
+**A non-loopback bind requires a token.** Set `PODSMEDIC_UI_TOKEN` and the page asks
+for it once, then carries an in-memory session cookie. Without one, podsmedic
+*refuses to start the view* on any address reachable from off the machine — a
+refusal rather than a warning, because a warning in a log nobody reads is exactly
+how a dashboard like this ends up on a LAN. Sessions clear on restart, guesses are
+throttled per source address, and the token is compared in constant time.
+
+It still speaks plain HTTP: there is no certificate to manage for something reached
+over a port-forward. On an untrusted network, port-forward remains the intended
+route, and there is no Service and no Ingress for it on purpose.
 
 ### This is the one thing that watches
 
@@ -918,3 +927,84 @@ make build
 
 Go 1.26, `client-go` v0.36, `anthropic-sdk-go` v1.59. The OpenAI-compatible backend is
 dependency-free (`net/http`).
+
+
+## Node health
+
+Every other signal in podsmedic starts from a pod, which means it learns a node is sick only
+once that node's pods have already fallen over. A node says so first: `DiskPressure` means the
+kubelet has stopped admitting pods and has started evicting to reclaim space; `NotReady` means
+everything on the node is stranded until the eviction timeout expires.
+
+`/nodes` reports what the last sweep saw. Faults are also pushed to your notifier, once per
+fault rather than once per sweep — a node stays NotReady for as long as it stays NotReady, and
+repeating that every minute is how a real alert gets muted. Conditions must hold for
+`PODSMEDIC_NODE_GRACE` before they count, because a kubelet restart flaps `Ready` for a few
+seconds.
+
+podsmedic **never writes to a node.** The base ClusterRole grants `get` and `list` and nothing
+more, and that is not an oversight to fix later: cordoning or draining a node has a blast radius
+far beyond patching a single workload, and it is precisely the kind of decision that should not
+be reachable from a model reading pod logs. The finding goes to you.
+
+## Rightsizing
+
+`/rightsize` reports containers whose declared requests do not match what they actually use, and
+`/rightsize html` sends the full document. Three kinds of finding:
+
+- **Oversized** — reserving far more than the measured peak. The waste is indirect but real: the
+  reservation is subtracted from every scheduling decision, so the cluster runs out of room while
+  the nodes sit idle.
+- **Undersized** — the peak exceeds the request. The pod runs on capacity the scheduler never set
+  aside, which overcommits the node and makes this pod a likely eviction victim.
+- **NoRequests** — no request declared at all. Reported however small the usage, because the harm
+  is not the size: the pod is scheduled best-effort, evicted first, and counted as zero by every
+  capacity check podsmedic makes — including the one deciding whether a scale-up fits.
+
+**These are never applied.** `heal.Validate` rests on the invariant that a value may only ever
+increase; that is what makes acting on an untrusted model's proposal safe, since the worst case is
+a workload with too much. Lowering a request is the opposite bet — it moves the scheduling floor
+and the eviction priority, so a wrong number gets a pod evicted under pressure it used to survive.
+There is no safe automatic version of that, so it stays a document you apply in your manifests.
+
+Suggestions are the measured **peak** times `PODSMEDIC_RIGHTSIZE_HEADROOM`, never the mean: a
+container that idles at 10m and spikes to 900m needs the 900m. A container is judged only after
+clearing both `MIN_SAMPLES` and `MIN_WINDOW`, because every workload has a quiet ten minutes and
+sizing one from that would be worse than saying nothing. The history persists in a ConfigMap, so a
+deploy does not restart the observation window.
+
+## Daily digest
+
+Set `PODSMEDIC_DIGEST_AT=09:00` (and optionally `PODSMEDIC_DIGEST_TZ=Asia/Jakarta`) and podsmedic
+posts one summary a day: what it swept, what failed, what it changed, what held, what it rolled
+back, what it has stopped trying to fix, and what the sizing report currently suggests.
+
+It sends on quiet days too, and that is the entire point. Every other message podsmedic produces
+is triggered by something going wrong, which leaves silence ambiguous — "nothing is broken" and
+"the agent died three days ago" look identical from the outside. A digest that arrives on a quiet
+day turns its own absence into a signal. Alert on `podsmedic_digests_total` going flat.
+
+The schedule is evaluated by looking *backwards* from the current time rather than forwards from
+the last send, so a window missed while the process was restarting is caught late instead of
+skipped for a day. `/digest` previews the same text without disturbing the daily accounting.
+
+## Running more than one replica
+
+podsmedic has always documented "exactly one replica", because the circuit breaker and the dedupe
+caches live in memory: two replicas would each half-enforce the per-workload heal limits that stop
+a heal loop. That makes a node failure a total outage of the thing meant to notice node failures.
+
+`PODSMEDIC_LEADER_ELECT=true` fixes that without changing the in-memory design. Only the leader
+sweeps, watches pods, and answers Telegram; the standby holds no state because it does nothing at
+all. On failover the new leader starts with empty caches — exactly the state a restart already
+produces, and what the persisted ConfigMaps exist to soften.
+
+Losing the lease exits the process rather than waiting to win it back. Another replica owns the
+cluster now, and this one's caches describe a period it no longer governs; exiting hands the
+kubelet a clean restart as a standby. The Telegram listener is leader-only for a second reason
+that is not about state at all: two processes long-polling `getUpdates` with the same bot token
+fight over the queue, and Telegram answers the loser with a 409.
+
+It needs the `Role` in `deploy/rbac.yaml` granting `get`/`create`/`update` on `leases` in
+podsmedic's own namespace. That is the only object podsmedic writes with auto-heal disabled, and
+it names only itself. Watch `podsmedic_leader`: summed across pods it must be exactly 1.

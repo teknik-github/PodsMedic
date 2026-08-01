@@ -31,6 +31,13 @@ func TestParseCommands(t *testing.T) {
 		{"/export html", CmdExport, "html"},
 		{"/pdf", CmdExport, ""},
 		{"/report", CmdExport, ""},
+		{"/rightsize", CmdRightsize, ""},
+		{"/rightsize html", CmdRightsize, "html"},
+		{"/sizing", CmdRightsize, ""},
+		{"/nodes", CmdNodes, ""},
+		{"/node", CmdNodes, ""},
+		{"/digest", CmdDigest, ""},
+		{"/summary", CmdDigest, ""},
 		{"/ask why is web crashing?", CmdAsk, "why is web crashing?"},
 		// Free text is a question.
 		{"why is api/web restarting?", CmdAsk, "why is api/web restarting?"},

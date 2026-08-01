@@ -68,6 +68,10 @@ data:
   # 0.0.0.0 inside a pod does NOT expose it outside the cluster — the pod has its
   # own network namespace — so this stays safe without a Service or hostPort.
   PODSMEDIC_UI_ADDR: ""            # e.g. 0.0.0.0:3456 to enable
+  # Required whenever UI_ADDR is not loopback: podsmedic refuses to serve the
+  # view on a reachable address without one. Put the real value in the Secret
+  # alongside the API key, not here.
+  PODSMEDIC_UI_SESSION_TTL: "12h"
   PODSMEDIC_UI_EVENT_BUFFER: "200"
   # Observability endpoints (/healthz, /readyz, /metrics). Empty disables them.
   PODSMEDIC_METRICS_ADDR: ":9090"
@@ -133,12 +137,48 @@ data:
   # Playbook: replay verified heals without an LLM diagnosis. Empty name disables.
   PODSMEDIC_PLAYBOOK_CONFIGMAP: "podsmedic-playbook"
   PODSMEDIC_PLAYBOOK_MAX_ENTRIES: "500"
+  # Retirement: a remedy that is only ever learned eventually describes a
+  # cluster that no longer exists. A rollback drops the entry immediately;
+  # repeat offenders are quarantined so a flapping fix is not re-learned and
+  # re-applied forever. MAX_AGE retires an unconfirmed remedy with no blame.
+  PODSMEDIC_PLAYBOOK_MAX_FAILURES: "2"
+  PODSMEDIC_PLAYBOOK_QUARANTINE_FOR: "24h"
+  PODSMEDIC_PLAYBOOK_FAILURE_DECAY: "168h"
+  PODSMEDIC_PLAYBOOK_MAX_AGE: "720h"
   # Circuit breaker: suspend healing a workload whose heals keep failing.
   PODSMEDIC_HEAL_BREAKER: "true"
   PODSMEDIC_HEAL_BREAKER_WINDOW: "6h"
   PODSMEDIC_HEAL_BREAKER_MAX_HEALS: "4"
   PODSMEDIC_HEAL_BREAKER_MAX_ROLLBACKS: "2"
   PODSMEDIC_HEAL_BREAKER_OPEN_FOR: "6h"
+  # Node health: report-only. Every other signal starts from a pod, so podsmedic
+  # otherwise learns a node is sick only after its pods fall over. It never
+  # writes to a node — the base ClusterRole grants read only.
+  PODSMEDIC_NODE_HEALTH: "true"
+  PODSMEDIC_NODE_GRACE: "3m"
+  PODSMEDIC_NODE_COOLDOWN: "2h"
+  PODSMEDIC_NODE_REPORT_CORDONED: "false"
+  # Rightsizing: suggestions only, never applied. heal.Validate exists on the
+  # rule that a value may only ever increase; lowering a request moves a pod's
+  # scheduling floor and eviction priority, so that call stays with a human.
+  PODSMEDIC_RIGHTSIZE: "true"
+  PODSMEDIC_RIGHTSIZE_CONFIGMAP: "podsmedic-rightsize"
+  PODSMEDIC_RIGHTSIZE_MIN_SAMPLES: "60"
+  PODSMEDIC_RIGHTSIZE_MIN_WINDOW: "24h"
+  PODSMEDIC_RIGHTSIZE_OVER_RATIO: "0.40"
+  PODSMEDIC_RIGHTSIZE_HEADROOM: "1.5"
+  # Daily digest. Sent on quiet days too — that is the point: without it,
+  # "nothing is broken" and "the agent died" look identical. Empty disables.
+  PODSMEDIC_DIGEST_AT: ""
+  PODSMEDIC_DIGEST_TZ: ""
+  # Leader election. Required before running more than one replica: the circuit
+  # breaker and dedupe caches are in memory, so two sweeping replicas would each
+  # half-enforce the per-workload heal limits. Needs the Role in rbac.yaml.
+  PODSMEDIC_LEADER_ELECT: "false"
+  PODSMEDIC_LEADER_LEASE: "podsmedic-leader"
+  PODSMEDIC_LEADER_LEASE_DURATION: "15s"
+  PODSMEDIC_LEADER_RENEW_DEADLINE: "10s"
+  PODSMEDIC_LEADER_RETRY_PERIOD: "2s"
   # Comma-separated. Leave empty to watch every namespace.
   PODSMEDIC_NAMESPACES: ""
 ---

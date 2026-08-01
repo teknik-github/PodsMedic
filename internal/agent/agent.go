@@ -18,6 +18,7 @@ import (
 	"github.com/peceldev/podsmedic/internal/config"
 	"github.com/peceldev/podsmedic/internal/dedupe"
 	"github.com/peceldev/podsmedic/internal/detect"
+	"github.com/peceldev/podsmedic/internal/digest"
 	"github.com/peceldev/podsmedic/internal/heal"
 	"github.com/peceldev/podsmedic/internal/incident"
 	"github.com/peceldev/podsmedic/internal/k8s"
@@ -69,6 +70,15 @@ type Agent struct {
 	// internal/rightsize on why there is no heal for it.
 	rightsize   *rightsize.Tracker
 	rightsizeCM string
+
+	// Daily digest. tally is never nil — it accumulates whether or not the
+	// digest is enabled, so /digest can answer immediately after someone turns
+	// it on.
+	tally       *digest.Tally
+	digestAt    digest.Schedule
+	digestOn    bool
+	digestLast  time.Time
+	digestDirty bool
 
 	// nodeSeen silences a node fault that is already known. A node stays
 	// NotReady for as long as it stays NotReady, so without this it would be the
@@ -168,6 +178,18 @@ func New(cfg *config.Config, kube *k8s.Client, brain llm.Client, notifier notify
 
 		incidentStateCM: cfg.IncidentStateName,
 		nodeSeen:        dedupe.New(cfg.NodeCooldown),
+		tally:           digest.NewTally(time.Now()),
+	}
+	// A bad schedule degrades the digest rather than stopping the agent: an
+	// operator's typo in a summary time must not cost them cluster monitoring.
+	if sched, on, err := digest.ParseSchedule(cfg.DigestAt, digestLocation(cfg.DigestTZ, log)); err != nil {
+		log.Error("daily digest disabled: PODSMEDIC_DIGEST_AT is not a time of day", "value", cfg.DigestAt, "err", err)
+	} else if on {
+		a.digestAt, a.digestOn = sched, true
+		// Seeded to now, not zero: a fresh install must not immediately send a
+		// summary of a day it did not watch.
+		a.digestLast = time.Now()
+		log.Info("daily digest scheduled", "at", sched.String())
 	}
 	// Independent of auto-heal: knowing a workload is three times oversized is
 	// useful whether or not podsmedic is allowed to change anything.
@@ -281,8 +303,11 @@ type sweepState struct {
 func (a *Agent) newSweepState(ctx context.Context, pods []corev1.Pod) *sweepState {
 	st := &sweepState{pods: pods, budget: breaker.NewBudget(a.cfg.HealMaxPerSweep)}
 
-	// Live usage feeds both the OOM/CPU predictor and the replica target.
-	if a.predictor != nil || a.healer != nil {
+	// Live usage feeds the OOM/CPU predictor, the derived replica target, and
+	// the sizing history. Rightsizing has to be in this condition or it silently
+	// observes nothing on a cluster with prediction and auto-heal both off,
+	// which is the default — the report would just never fill up.
+	if a.predictor != nil || a.healer != nil || a.rightsize != nil {
 		usage, err := a.kube.UsageSamples(ctx, pods, a.cfg.Namespaces)
 		if err != nil {
 			a.log.Warn("live usage unavailable (metrics-server?)", "err", err)
@@ -363,6 +388,7 @@ func (a *Agent) sweep(ctx context.Context) {
 	problems = append(problems, a.predictProblems(st, problems)...)
 
 	metrics.SweepsTotal.Inc()
+	a.tally.Sweep()
 	metrics.PodsScanned.Set(float64(len(pods)))
 	metrics.ProblemsDetected.Set(float64(len(problems)))
 
@@ -378,6 +404,7 @@ func (a *Agent) sweep(ctx context.Context) {
 		case incident.New:
 			fresh = append(fresh, inc)
 			metrics.IncidentsTotal.Inc()
+			a.tally.IncidentOpened()
 		case incident.Update:
 			a.notifyIncidentUpdate(ctx, inc, p.Kind)
 			a.maybeRetryHeal(ctx, inc, st)
@@ -449,6 +476,9 @@ func (a *Agent) sweep(ctx context.Context) {
 	a.persistPlaybook(ctx)
 	a.persistRightsize(ctx)
 
+	// Last, so the summary describes a sweep that has fully finished.
+	a.maybeDigest(ctx)
+
 	if len(fresh) == 0 {
 		return
 	}
@@ -517,6 +547,7 @@ func (a *Agent) notifyIncidentUpdate(ctx context.Context, inc *incident.Incident
 // notifyIncidentResolved announces that a workload's incident has cleared.
 func (a *Agent) notifyIncidentResolved(ctx context.Context, inc *incident.Incident) {
 	metrics.IncidentsResolved.Inc()
+	a.tally.IncidentResolved()
 	a.log.Info("incident resolved", "pod", inc.Namespace+"/"+inc.Pod, "container", inc.Container)
 	msg := fmt.Sprintf("Resolved: %s/%s (container %s) — no longer failing after %s.",
 		inc.Namespace, inc.Pod, inc.Container, inc.LastSeen.Sub(inc.FirstSeen).Round(time.Second))
@@ -627,6 +658,9 @@ func (a *Agent) recordUsage(log *slog.Logger, u *llm.Usage) {
 	if cost > 0 {
 		metrics.LLMCost.Add(cost, p)
 	}
+	// Tallied here rather than at the request site so the digest's call count
+	// and its cost figure can never disagree.
+	a.tally.LLM(cost)
 	log.Info("llm usage",
 		"input", u.InputTokens, "output", u.OutputTokens, "cache_read", u.CacheReadTokens, "cost_usd", cost)
 }
@@ -662,6 +696,7 @@ func (a *Agent) maybeHeal(ctx context.Context, log *slog.Logger, st *sweepState,
 		// A declined proposal is the normal case, not an error condition.
 		res.Skipped = err.Error()
 		metrics.HealsTotal.Inc("skipped")
+		a.tally.Heal("skipped")
 		log.Info("auto-heal skipped", "reason", err)
 		a.emit(live.ClassDeclined, bundle.Problem, "declined", err.Error())
 		return res
@@ -687,6 +722,7 @@ func (a *Agent) maybeHeal(ctx context.Context, log *slog.Logger, st *sweepState,
 	if !a.healSeen.ShouldAlert(plan.WorkloadKey()) {
 		res.Skipped = "within heal cooldown for this workload"
 		metrics.HealsTotal.Inc("skipped")
+		a.tally.Heal("skipped")
 		return res
 	}
 
@@ -697,18 +733,22 @@ func (a *Agent) maybeHeal(ctx context.Context, log *slog.Logger, st *sweepState,
 		if errors.Is(err, heal.ErrGitOpsManaged) {
 			res.Skipped = err.Error()
 			metrics.HealsTotal.Inc("skipped")
+			a.tally.Heal("skipped")
 			log.Info("auto-heal skipped", "reason", err)
 			return res
 		}
 		res.Error = err.Error()
 		metrics.HealsTotal.Inc("failed")
+		a.tally.Heal("failed")
 		log.Error("auto-heal failed", "err", err)
 		return res
 	}
 	if outcome.Applied {
 		metrics.HealsTotal.Inc("applied")
+		a.tally.Heal("applied")
 	} else {
 		metrics.HealsTotal.Inc("dryrun")
+		a.tally.Heal("dryrun")
 	}
 
 	res.Applied = outcome.Applied
@@ -820,8 +860,20 @@ func (a *Agent) maybeRetryHeal(ctx context.Context, inc *incident.Incident, st *
 	}
 }
 
-// incidentStateKey is the single ConfigMap data key holding the incident set.
-const incidentStateKey = "incidents.json"
+// The ConfigMap data keys holding the agent's own cross-restart bookkeeping.
+// Two keys in one object rather than two objects: the digest cursor is a single
+// timestamp, and a whole ConfigMap (plus its RBAC) for one field would be
+// ceremony without benefit.
+const (
+	incidentStateKey = "incidents.json"
+	digestStateKey   = "digest.json"
+)
+
+// digestState is the digest's cursor, persisted so a restart does not re-send
+// today's summary or silently skip tomorrow's.
+type digestState struct {
+	LastSent time.Time `json:"lastSent"`
+}
 
 // loadIncidents restores the incident set persisted by a previous run. A missing
 // ConfigMap or a decode error is non-fatal: the agent simply starts with no open
@@ -834,6 +886,18 @@ func (a *Agent) loadIncidents(ctx context.Context) {
 	if err != nil {
 		a.log.Error("incident state: load failed", "err", err)
 		return
+	}
+	if blob := data[digestStateKey]; blob != "" && a.digestOn {
+		var ds digestState
+		if err := json.Unmarshal([]byte(blob), &ds); err != nil {
+			a.log.Error("digest state: decode failed", "err", err)
+		} else if !ds.LastSent.IsZero() {
+			// Restoring an *older* cursor than the seeded start time is the whole
+			// point: it is what lets a restart notice that today's digest has not
+			// gone out yet.
+			a.digestLast = ds.LastSent
+			a.log.Info("digest cursor restored", "lastSent", ds.LastSent)
+		}
 	}
 	blob := data[incidentStateKey]
 	if blob == "" {
@@ -848,11 +912,11 @@ func (a *Agent) loadIncidents(ctx context.Context) {
 	a.log.Info("incident state restored", "incidents", len(list))
 }
 
-// persistIncidents writes the incident set to its ConfigMap, but only when it has
-// changed since the last write. A write failure is logged and the dirty flag is
-// left set, so the next sweep retries.
+// persistIncidents writes the incident set and the digest cursor to their
+// ConfigMap, but only when something has changed since the last write. A write
+// failure is logged and the dirty flags are left set, so the next sweep retries.
 func (a *Agent) persistIncidents(ctx context.Context) {
-	if a.incidentStateCM == "" || !a.incidents.Dirty() {
+	if a.incidentStateCM == "" || (!a.incidents.Dirty() && !a.digestDirty) {
 		return
 	}
 	blob, err := json.Marshal(a.incidents.Snapshot())
@@ -860,11 +924,23 @@ func (a *Agent) persistIncidents(ctx context.Context) {
 		a.log.Error("incident state: encode failed", "err", err)
 		return
 	}
-	if err := a.kube.PutConfigMap(ctx, k8s.Namespace(), a.incidentStateCM, map[string]string{incidentStateKey: string(blob)}); err != nil {
+	data := map[string]string{incidentStateKey: string(blob)}
+	// PutConfigMap replaces the whole object, so the digest cursor has to be
+	// rewritten every time or it would be erased by the next incident write.
+	if a.digestOn {
+		cursor, err := json.Marshal(digestState{LastSent: a.digestLast})
+		if err != nil {
+			a.log.Error("digest state: encode failed", "err", err)
+		} else {
+			data[digestStateKey] = string(cursor)
+		}
+	}
+	if err := a.kube.PutConfigMap(ctx, k8s.Namespace(), a.incidentStateCM, data); err != nil {
 		a.log.Error("incident state: save failed", "err", err)
 		return
 	}
 	a.incidents.ClearDirty()
+	a.digestDirty = false
 }
 
 // playbookStateKey is the single ConfigMap data key holding the playbook.
@@ -968,6 +1044,7 @@ func (a *Agent) tryPlaybook(ctx context.Context, log *slog.Logger, st *sweepStat
 
 	a.playbook.MarkHit(ctrlKey, kind, time.Now())
 	metrics.PlaybookHitsTotal.Inc()
+	a.tally.PlaybookHit()
 	a.rememberHeal(inc.Key, action, entry.Confidence, res)
 
 	diag := &llm.Diagnosis{
@@ -1029,6 +1106,7 @@ func (a *Agent) retirePlaybook(ctx context.Context) {
 		return
 	}
 	metrics.PlaybookRetirementsTotal.Add(uint64(len(retired)))
+	a.tally.PlaybookRetired(len(retired))
 	for _, e := range retired {
 		a.log.Info("playbook: retired unconfirmed remedy",
 			"controller", e.Controller, "kind", e.Kind, "lastVerified", e.LastVerified)
@@ -1212,6 +1290,7 @@ func (a *Agent) verifyHeals(ctx context.Context, problems []detect.Problem) {
 		switch heal.VerifyVerdict(rec, now, stillFailing) {
 		case heal.VerdictHealthy:
 			metrics.VerificationsTotal.Inc("verified")
+			a.tally.Verification("verified")
 			a.log.Info("heal verified", "controller", rec.ControllerKey(), "change", rec.Summary)
 			a.emitRecord(live.ClassVerify, rec, "verified", "the change held")
 			a.recordAudit(ctx, a.log, auditEventFromRecord(rec, "verified", now))
@@ -1221,6 +1300,7 @@ func (a *Agent) verifyHeals(ctx context.Context, problems []detect.Problem) {
 			if a.playbook != nil && rec.ActionJSON != "" {
 				if a.playbook.Record(rec.ControllerKey(), rec.Kind, rec.ActionJSON, rec.Confidence, now) {
 					metrics.PlaybookRecordsTotal.Inc()
+					a.tally.PlaybookLearned()
 				} else {
 					a.log.Info("playbook: heal held but the workload is quarantined, not learning it",
 						"controller", rec.ControllerKey(), "kind", rec.Kind)
@@ -1258,11 +1338,13 @@ func (a *Agent) rollback(ctx context.Context, rec heal.HealRecord) {
 		}
 		if quarantined {
 			metrics.PlaybookQuarantinesTotal.Inc()
+			a.tally.PlaybookQuarantined()
 			a.quarantineNotice(ctx, rec.ControllerKey(), rec.Kind)
 		}
 	}
 
 	metrics.VerificationsTotal.Inc("rolledback")
+	a.tally.Verification("rolledback")
 	// A rollback means the heal did not hold — the strongest breaker signal.
 	if a.breaker != nil {
 		if a.breaker.OnRollback(rec.ControllerKey(), time.Now()) {

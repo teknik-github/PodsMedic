@@ -34,6 +34,15 @@ func New(kubeconfig string) (*Client, error) {
 	return &Client{cs: cs}, nil
 }
 
+// Clientset exposes the underlying client-go interface.
+//
+// Deliberately the only escape hatch from this facade, and used by exactly one
+// caller: leader election, which needs the coordination API this package
+// otherwise has no business knowing about. Everything else goes through a named
+// method here, so the set of API calls podsmedic makes stays readable — and
+// stays matched to the RBAC.
+func (c *Client) Clientset() kubernetes.Interface { return c.cs }
+
 func restConfig(kubeconfig string) (*rest.Config, error) {
 	if cfg, err := rest.InClusterConfig(); err == nil {
 		return cfg, nil

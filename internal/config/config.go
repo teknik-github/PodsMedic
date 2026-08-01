@@ -13,6 +13,7 @@ import (
 
 	"github.com/peceldev/podsmedic/internal/detect"
 	"github.com/peceldev/podsmedic/internal/heal"
+	"github.com/peceldev/podsmedic/internal/lease"
 	"github.com/peceldev/podsmedic/internal/playbook"
 	"github.com/peceldev/podsmedic/internal/rightsize"
 )
@@ -156,6 +157,21 @@ type Config struct {
 	NodeCooldown       time.Duration // silence between repeats of the same fault
 	NodeReportCordoned bool          // include deliberately cordoned nodes
 
+	// Daily digest. Every other message podsmedic sends is triggered by a
+	// failure, which leaves "nothing is broken" and "the agent died" looking
+	// identical. The digest arrives either way.
+	DigestAt string // "HH:MM"; empty disables
+	DigestTZ string // IANA zone the time is read in; empty means the host's
+
+	// Leader election. The breaker and dedupe caches are in memory, so two
+	// replicas cannot both sweep; this is what makes a second replica safe.
+	// Off by default, because with one replica it only adds a lease to renew.
+	LeaderElect         bool
+	LeaderLeaseName     string
+	LeaderLeaseDuration time.Duration
+	LeaderRenewDeadline time.Duration
+	LeaderRetryPeriod   time.Duration
+
 	// Behaviour
 	DryRun bool
 	// MetricsAddr is the listen address for /healthz, /readyz, /metrics. Empty
@@ -180,28 +196,37 @@ type Config struct {
 // Load reads configuration from the environment, applying defaults.
 func Load() (*Config, error) {
 	c := &Config{
-		Kubeconfig:          os.Getenv("KUBECONFIG"),
-		MaxAlertsPerCycle:   envInt("PODSMEDIC_MAX_ALERTS_PER_CYCLE", 10),
-		Concurrency:         envInt("PODSMEDIC_CONCURRENCY", 3),
-		Interval:            envDuration("PODSMEDIC_INTERVAL", 60*time.Second),
-		Cooldown:            envDuration("PODSMEDIC_COOLDOWN", 30*time.Minute),
-		LogTailLines:        int64(envInt("PODSMEDIC_LOG_TAIL_LINES", 120)),
-		MaxEvents:           envInt("PODSMEDIC_MAX_EVENTS", 25),
-		MinRestarts:         int32(envInt("PODSMEDIC_MIN_RESTARTS", 3)),
-		RestartWindow:       envDuration("PODSMEDIC_RESTART_WINDOW", time.Hour),
-		NotReadyGrace:       envDuration("PODSMEDIC_NOT_READY_GRACE", 10*time.Minute),
-		VolumeMountGrace:    envDuration("PODSMEDIC_VOLUME_MOUNT_GRACE", 2*time.Minute),
-		Provider:            strings.ToLower(envString("PODSMEDIC_PROVIDER", "anthropic")),
-		BaseURL:             os.Getenv("PODSMEDIC_BASE_URL"),
-		MaxTokens:           int64(envInt("PODSMEDIC_MAX_TOKENS", 8000)),
-		Effort:              envString("PODSMEDIC_EFFORT", "high"),
-		PriceInputPerMTok:   envFloat("PODSMEDIC_LLM_PRICE_INPUT", 0),
-		PriceOutputPerMTok:  envFloat("PODSMEDIC_LLM_PRICE_OUTPUT", 0),
-		SlackWebhookURL:     os.Getenv("SLACK_WEBHOOK_URL"),
-		TelegramBotToken:    os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramChatID:      os.Getenv("TELEGRAM_CHAT_ID"),
-		TelegramListen:      envBool("PODSMEDIC_TELEGRAM_LISTEN", false),
-		ChatMaxPerMinute:    envInt("PODSMEDIC_CHAT_MAX_PER_MINUTE", 6),
+		Kubeconfig:         os.Getenv("KUBECONFIG"),
+		MaxAlertsPerCycle:  envInt("PODSMEDIC_MAX_ALERTS_PER_CYCLE", 10),
+		Concurrency:        envInt("PODSMEDIC_CONCURRENCY", 3),
+		Interval:           envDuration("PODSMEDIC_INTERVAL", 60*time.Second),
+		Cooldown:           envDuration("PODSMEDIC_COOLDOWN", 30*time.Minute),
+		LogTailLines:       int64(envInt("PODSMEDIC_LOG_TAIL_LINES", 120)),
+		MaxEvents:          envInt("PODSMEDIC_MAX_EVENTS", 25),
+		MinRestarts:        int32(envInt("PODSMEDIC_MIN_RESTARTS", 3)),
+		RestartWindow:      envDuration("PODSMEDIC_RESTART_WINDOW", time.Hour),
+		NotReadyGrace:      envDuration("PODSMEDIC_NOT_READY_GRACE", 10*time.Minute),
+		VolumeMountGrace:   envDuration("PODSMEDIC_VOLUME_MOUNT_GRACE", 2*time.Minute),
+		Provider:           strings.ToLower(envString("PODSMEDIC_PROVIDER", "anthropic")),
+		BaseURL:            os.Getenv("PODSMEDIC_BASE_URL"),
+		MaxTokens:          int64(envInt("PODSMEDIC_MAX_TOKENS", 8000)),
+		Effort:             envString("PODSMEDIC_EFFORT", "high"),
+		PriceInputPerMTok:  envFloat("PODSMEDIC_LLM_PRICE_INPUT", 0),
+		PriceOutputPerMTok: envFloat("PODSMEDIC_LLM_PRICE_OUTPUT", 0),
+		SlackWebhookURL:    os.Getenv("SLACK_WEBHOOK_URL"),
+		TelegramBotToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramChatID:     os.Getenv("TELEGRAM_CHAT_ID"),
+		TelegramListen:     envBool("PODSMEDIC_TELEGRAM_LISTEN", false),
+		ChatMaxPerMinute:   envInt("PODSMEDIC_CHAT_MAX_PER_MINUTE", 6),
+		DigestAt:           envStringAllowEmpty("PODSMEDIC_DIGEST_AT", ""),
+		DigestTZ:           envStringAllowEmpty("PODSMEDIC_DIGEST_TZ", ""),
+
+		LeaderElect:         envBool("PODSMEDIC_LEADER_ELECT", false),
+		LeaderLeaseName:     envString("PODSMEDIC_LEADER_LEASE", "podsmedic-leader"),
+		LeaderLeaseDuration: envDuration("PODSMEDIC_LEADER_LEASE_DURATION", lease.DefaultLeaseDuration),
+		LeaderRenewDeadline: envDuration("PODSMEDIC_LEADER_RENEW_DEADLINE", lease.DefaultRenewDeadline),
+		LeaderRetryPeriod:   envDuration("PODSMEDIC_LEADER_RETRY_PERIOD", lease.DefaultRetryPeriod),
+
 		DryRun:              envBool("PODSMEDIC_DRY_RUN", false),
 		Rightsize:           envBool("PODSMEDIC_RIGHTSIZE", true),
 		RightsizeName:       envStringAllowEmpty("PODSMEDIC_RIGHTSIZE_CONFIGMAP", "podsmedic-rightsize"),

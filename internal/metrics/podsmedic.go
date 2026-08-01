@@ -57,6 +57,16 @@ var (
 	ClusterPodSlotsFree     = Default.NewGauge("podsmedic_cluster_pod_slots_free", "Pod slots left on schedulable nodes after the heal reserve.")
 	ClusterNodesSchedulable = Default.NewGauge("podsmedic_cluster_nodes_schedulable", "Nodes a new pod could actually be placed on.")
 
+	// Leader election: 1 while this replica holds the lease. On a two-replica
+	// deployment the sum across pods must be 1 — a sustained 0 means nobody is
+	// sweeping, and a sustained 2 means the lease is not doing its job.
+	Leader = Default.NewGauge("podsmedic_leader", "1 while this replica holds the cluster lease.")
+
+	// Daily digest, labelled result=sent|failed. Its absence is the alert this
+	// metric exists to make measurable: alert on the counter going flat, not on
+	// failures alone.
+	DigestsTotal = Default.NewCounter("podsmedic_digests_total", "Daily digests, by delivery result.", "result")
+
 	// Rightsizing. Report-only, so there is nothing to count as applied — this
 	// measures how much of the cluster has enough history to be judged.
 	RightsizeTracked  = Default.NewGauge("podsmedic_rightsize_tracked", "Containers with a usage history under observation.")

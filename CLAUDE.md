@@ -30,6 +30,7 @@ One poll loop, one sweep per `PODSMEDIC_INTERVAL`:
 ```
 ListPods → detect → predict → incident.Observe → Collect evidence (+ cluster capacity,
            workload load) → playbook? / LLM → heal.Validate → Execute → verify/rollback → notify
+        ↘ observe usage (rightsize) → check nodes → retire playbook → maybe digest
 
 Telegram inbound (optional) → chat.Bot authorises → agent.Answer → local state or llm.Answer
 ```
@@ -89,6 +90,43 @@ data. Do not add an editing, resizing, detaching, or deleting storage action.
 Evidence lives in `k8s.claims` — the *claim's* events, not the pod's, are where the reason
 an unbound volume will not bind actually appears.
 
+### Three things report and never act
+
+`internal/nodes`, `internal/rightsize`, and `internal/digest` all end at a notification, and
+each for its own reason rather than because nobody got round to wiring them up:
+
+- **nodes** — podsmedic has no write verb on nodes and must not gain one. Cordoning or
+  draining is a decision whose blast radius dwarfs patching one workload, and it is exactly
+  the decision an LLM reading pod logs should not be making. The value is timing: a node
+  reports DiskPressure or NotReady *before* its pods fall over, which is a stage earlier than
+  any pod-derived detector can see.
+- **rightsize** — this is the one place where the "values only ever increase" invariant is the
+  wrong tool. That rule is what makes an untrusted proposal safe to apply: the worst case is a
+  workload with too much. Lowering a request is the opposite bet, moving the scheduling floor
+  and the eviction priority, so a wrong number evicts a pod under pressure it used to survive.
+  Judgement stays with a human. Recommendations come from the measured **peak** times a
+  headroom factor, never the mean — a container idling at 10m that spikes to 900m needs 900m —
+  and require both `MinSamples` and `MinWindow`, because every workload has a quiet ten minutes.
+- **digest** — exists to make silence unambiguous. Every other message is failure-triggered, so
+  "nothing is broken" and "the agent died" look identical from outside. It therefore sends on
+  quiet days too, and `Schedule.LastSlot` works *backwards from now* rather than forwards from
+  the last send, so a window missed during a restart is caught late instead of skipped.
+
+### The playbook forgets three different ways
+
+`Fail`, `Retire`, and `Evict` are not synonyms and must not be collapsed:
+
+- `Fail` — the remedy was replayed and rolled back. The entry goes immediately, and a **scar**
+  outlives it. Once a workload+kind collects `MaxFailures` scars inside `FailureDecay` it is
+  **quarantined**: `Record` refuses, so the model handles it fresh and nothing is learned back.
+  Without this, a flapping remedy is re-learned and re-rolled-back forever, and every cycle is
+  a real patch to a real cluster. Scars persist in the ConfigMap, because the restart that
+  would otherwise clear a quarantine is often caused by the flapping heal itself.
+- `Retire` — nothing failed; the remedy merely has not been confirmed within `MaxAge`. No scar,
+  and it is re-learnable the moment it is proven again.
+- `Evict` — the stored remedy is unusable for *our* reason (it no longer decodes). A scar here
+  would punish the wrong party.
+
 ### Heal limits come in two scopes, and the wide one is newer
 
 `heal.Validate`, the cooldown (`healSeen`), `breaker.Breaker`, and the playbook are all
@@ -124,12 +162,18 @@ HTML file plus SSE. `k8s.WatchPods` is the only informer in the codebase and exi
 solely for this: the sweep stays on its interval because healing is deliberately
 paced, and only the display is live.
 
+The page is gated by `ui.Gate` (`internal/ui/auth.go`): a token from `PODSMEDIC_UI_TOKEN`
+exchanged for an in-memory session cookie. `Serve` **refuses to start** on a non-loopback
+address with no token rather than warning — a page listing every workload must not reach a
+LAN because a log line went unread. There is still no TLS, so port-forward remains the
+intended route on an untrusted network.
+
 Load-bearing details: `Stream.Publish` must never block (it is called from the sweep
 *and* an informer callback — a browser on a sleeping laptop cannot be allowed to
 stall either), a nil `*Stream` is a valid no-op so call sites stay unconditional,
 and `Transitions` must stay strict about what it emits or the display flickers
 constantly. The page fetches nothing external, and there is no Service or Ingress
-for the UI port on purpose — it has no authentication.
+for the UI port on purpose — it speaks plain HTTP.
 
 ### Durable state lives in ConfigMaps
 
@@ -141,15 +185,28 @@ Four ConfigMaps in podsmedic's own namespace (`k8s.Namespace()`), all read/writt
 | `podsmedic-heal-state` | `heal.ConfigMapStore` | pending heals + prior values, for verify/rollback |
 | `podsmedic-audit` | `audit` | append-only trail, oldest dropped past the cap |
 | `podsmedic-playbook` | `playbook` | verified remedies, replayed with no LLM call |
-| `podsmedic-incident-state` | `incident` (via agent `Snapshot`/`Restore`) | open incidents + pending heal proposals |
+| `podsmedic-incident-state` | `incident` (via agent `Snapshot`/`Restore`) | open incidents + pending heal proposals, **and** the digest cursor |
+| `podsmedic-rightsize` | `rightsize` | per-container usage history, so the observation window survives a deploy |
+
+The incident-state ConfigMap holds two keys, not one. `PutConfigMap` replaces the whole
+object, so `persistIncidents` must rewrite the digest cursor every time or the next incident
+write erases it. A whole ConfigMap for one timestamp would be ceremony without benefit.
 
 A missing ConfigMap is a normal first run, not an error. Writes are non-fatal — an absent RBAC rule
 degrades a feature, it must not stop the sweep. Each store exposes `Dirty()`/`ClearDirty()` so a
 sweep only writes when something changed.
 
 Circuit-breaker state (`internal/breaker`) and the dedupe caches are deliberately **in-memory** —
-they clear on restart. Combined with the in-memory dedupe, this is why podsmedic must run
-**exactly one replica**.
+they clear on restart. That is why only one replica may *sweep*: two would each half-enforce the
+per-workload heal limits. `internal/lease` is what makes a second replica safe rather than
+removing the constraint — the standby holds no state because it does nothing, and `main.active`
+gates the sweep, the pod watch, and the chat listener on holding the lease. Only `/metrics` runs
+on both, so a standby can answer its probe.
+
+Losing the lease returns `lease.ErrLostLeadership` and the process exits. Resuming in place
+would mean two processes with two different histories each believing they were authoritative
+for some overlapping period. The chat listener is leader-only for a second, concrete reason:
+two processes long-polling `getUpdates` with one bot token get a 409.
 
 ### Provider abstraction
 
@@ -207,6 +264,8 @@ breaks — per-pod content belongs in the user turn.
   the agent already holds so it costs no tokens, and put any non-trivial formatting in the package
   that owns the data (e.g. `heal.Action.Describe`) so it gets a test. A command that returns a file
   sets `chat.Reply.Document`; the bot uploads it via multipart `sendDocument`.
+- New node check: a case in `nodes.checkNode` plus a `nodes_test.go` case. It must stay
+  report-only — do not add a write verb on nodes to `rbac.yaml`.
 - New export format: a renderer in `internal/report` plus a `ParseFormat` case. Rendering is a pure
   function of `report.Input` — never call the LLM or the cluster from there, or a study document
   could describe a remedy that was never learned. HTML must stay self-contained (no external

@@ -13,9 +13,17 @@ metadata:
   labels:
     app.kubernetes.io/name: podsmedic
 spec:
-  # Single replica on purpose: the dedupe cache is in-memory, so two replicas
-  # would double-alert on every problem.
+  # Single replica by default: the dedupe cache and the circuit breaker are
+  # in-memory, so two sweeping replicas would double-alert and each would only
+  # half-enforce the per-workload heal limits.
+  #
+  # To run two, set PODSMEDIC_LEADER_ELECT=true in the ConfigMap first — then
+  # only the leader sweeps and the standby does nothing at all. Raising this
+  # number without that switch is the one change here that is actively unsafe.
   replicas: 1
+  # Recreate, not RollingUpdate: without leader election an overlap would mean
+  # two agents healing at once. With election on, RollingUpdate is fine and
+  # fails over in milliseconds, because the lease is released on shutdown.
   strategy:
     type: Recreate
   selector:

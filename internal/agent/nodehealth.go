@@ -51,6 +51,7 @@ func (a *Agent) checkNodes(ctx context.Context, pods []corev1.Pod) {
 			continue
 		}
 		metrics.NodeFaultsTotal.Inc(string(f.Kind))
+		a.tally.NodeFault()
 		a.log.Warn("node fault", "node", f.Node, "kind", string(f.Kind),
 			"severity", f.Severity, "pods", f.Pods, "detail", f.Summary)
 

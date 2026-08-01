@@ -18,6 +18,7 @@ import (
 	"github.com/peceldev/podsmedic/internal/chat"
 	"github.com/peceldev/podsmedic/internal/config"
 	"github.com/peceldev/podsmedic/internal/k8s"
+	"github.com/peceldev/podsmedic/internal/lease"
 	"github.com/peceldev/podsmedic/internal/live"
 	"github.com/peceldev/podsmedic/internal/llm"
 	"github.com/peceldev/podsmedic/internal/metrics"
@@ -75,6 +76,60 @@ func run(log *slog.Logger) error {
 
 	sre := agent.New(cfg, kube, brain, notifier, log)
 
+	// Validate sinks up front so a bad webhook or token surfaces now, not on the
+	// first real alert. Non-fatal: a transient network blip should not stop the
+	// agent, and the failure is metered.
+	checkSinks(ctx, log, notifier)
+
+	// Observability endpoints run on every replica, leader or not: a standby
+	// still has to answer its liveness probe.
+	metrics.Up.Set(1)
+	go func() {
+		if err := metrics.Serve(ctx, cfg.MetricsAddr, nil); err != nil {
+			log.Error("metrics server stopped", "err", err)
+		}
+	}()
+
+	// Everything that touches the cluster or the chat runs only while this
+	// replica holds the lease. Without election that is unconditionally true,
+	// which is the single-replica behaviour podsmedic has always had.
+	if !cfg.LeaderElect {
+		// Reported as leader even with election off, so "sum(podsmedic_leader)
+		// == 1" is the same alert in both modes rather than one that silently
+		// matches nothing on a single-replica deployment.
+		metrics.Leader.Set(1)
+		return active(ctx, cfg, kube, sre, log)
+	}
+
+	metrics.Leader.Set(0)
+	err = lease.Run(ctx, kube.Clientset(), lease.Options{
+		Name:          cfg.LeaderLeaseName,
+		Namespace:     k8s.Namespace(),
+		LeaseDuration: cfg.LeaderLeaseDuration,
+		RenewDeadline: cfg.LeaderRenewDeadline,
+		RetryPeriod:   cfg.LeaderRetryPeriod,
+	}, log, func(leadCtx context.Context) error {
+		metrics.Leader.Set(1)
+		defer metrics.Leader.Set(0)
+		return active(leadCtx, cfg, kube, sre, log)
+	})
+	if errors.Is(err, lease.ErrLostLeadership) {
+		// Not an error to retry: another replica owns the cluster now, and this
+		// process's in-memory brakes describe a period it no longer governs.
+		// Exiting hands the kubelet a clean restart as a standby.
+		log.Warn("exiting after losing leadership; the new leader has taken over")
+		return nil
+	}
+	return err
+}
+
+// active runs everything that must happen on exactly one replica: the sweep
+// loop, the pod watch feeding the live view, and the inbound Telegram listener.
+//
+// The chat listener belongs here for a concrete reason beyond tidiness — two
+// processes long-polling getUpdates with the same bot token fight over the
+// message queue, and Telegram answers the loser with a 409.
+func active(ctx context.Context, cfg *config.Config, kube *k8s.Client, sre *agent.Agent, log *slog.Logger) error {
 	// The live view, when enabled. It gets its own port and its own switch: see
 	// the internal/ui package comment on why it does not join /metrics.
 	if cfg.UIAddr != "" {
@@ -123,19 +178,6 @@ func run(log *slog.Logger) error {
 		// wonder why their message went nowhere.
 		log.Info("telegram chat listener is off; set PODSMEDIC_TELEGRAM_LISTEN=true to answer questions")
 	}
-
-	// Validate sinks up front so a bad webhook or token surfaces now, not on the
-	// first real alert. Non-fatal: a transient network blip should not stop the
-	// agent, and the failure is metered.
-	checkSinks(ctx, log, notifier)
-
-	// Observability endpoints run alongside the poll loop.
-	metrics.Up.Set(1)
-	go func() {
-		if err := metrics.Serve(ctx, cfg.MetricsAddr, nil); err != nil {
-			log.Error("metrics server stopped", "err", err)
-		}
-	}()
 
 	return sre.Run(ctx)
 }

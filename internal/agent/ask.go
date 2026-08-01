@@ -54,6 +54,8 @@ func (a *Agent) Answer(ctx context.Context, q chat.Question) (chat.Reply, error)
 		return a.rightsizeReply(q.Text), nil
 	case chat.CmdNodes:
 		return chat.Say(a.nodesText()), nil
+	case chat.CmdDigest:
+		return chat.Say(a.digestPreview()), nil
 	}
 	text, err := a.askModel(ctx, q.Text)
 	if err != nil {
