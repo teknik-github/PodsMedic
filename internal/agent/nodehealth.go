@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/live"
-	"github.com/peceldev/podsmedic/internal/metrics"
-	"github.com/peceldev/podsmedic/internal/nodes"
+	"github.com/teknik-github/PodsMedic/internal/live"
+	"github.com/teknik-github/PodsMedic/internal/metrics"
+	"github.com/teknik-github/PodsMedic/internal/nodes"
 
 	corev1 "k8s.io/api/core/v1"
 )

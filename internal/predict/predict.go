@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/detect"
+	"github.com/teknik-github/PodsMedic/internal/detect"
 )
 
 // Sample is one container's live memory and CPU usage against its configured

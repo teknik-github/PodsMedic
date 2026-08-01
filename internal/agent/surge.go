@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/peceldev/podsmedic/internal/breaker"
-	"github.com/peceldev/podsmedic/internal/detect"
-	"github.com/peceldev/podsmedic/internal/live"
-	"github.com/peceldev/podsmedic/internal/metrics"
+	"github.com/teknik-github/PodsMedic/internal/breaker"
+	"github.com/teknik-github/PodsMedic/internal/detect"
+	"github.com/teknik-github/PodsMedic/internal/live"
+	"github.com/teknik-github/PodsMedic/internal/metrics"
 )
 
 // clusterOpts builds the cluster-wide bounds from config.

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/detect"
+	"github.com/teknik-github/PodsMedic/internal/detect"
 )
 
 func prob(pod string, kind detect.Kind) detect.Problem {

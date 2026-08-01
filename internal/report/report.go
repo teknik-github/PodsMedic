@@ -19,9 +19,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/audit"
-	"github.com/peceldev/podsmedic/internal/heal"
-	"github.com/peceldev/podsmedic/internal/playbook"
+	"github.com/teknik-github/PodsMedic/internal/audit"
+	"github.com/teknik-github/PodsMedic/internal/heal"
+	"github.com/teknik-github/PodsMedic/internal/playbook"
 )
 
 // Format selects the rendering.

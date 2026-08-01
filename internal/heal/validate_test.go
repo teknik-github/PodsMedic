@@ -7,9 +7,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/peceldev/podsmedic/internal/capacity"
-	"github.com/peceldev/podsmedic/internal/detect"
-	"github.com/peceldev/podsmedic/internal/k8s"
+	"github.com/teknik-github/PodsMedic/internal/capacity"
+	"github.com/teknik-github/PodsMedic/internal/detect"
+	"github.com/teknik-github/PodsMedic/internal/k8s"
 )
 
 func testOpts() Options {

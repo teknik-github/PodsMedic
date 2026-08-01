@@ -7,8 +7,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/peceldev/podsmedic/internal/heal"
-	"github.com/peceldev/podsmedic/internal/k8s"
+	"github.com/teknik-github/PodsMedic/internal/heal"
+	"github.com/teknik-github/PodsMedic/internal/k8s"
 )
 
 // Diagnoser produces a diagnosis for one evidence bundle. Both the Anthropic

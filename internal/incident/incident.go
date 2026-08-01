@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/detect"
+	"github.com/teknik-github/PodsMedic/internal/detect"
 )
 
 // Action tells the caller what to do with an observed problem.

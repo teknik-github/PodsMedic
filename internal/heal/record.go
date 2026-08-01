@@ -3,7 +3,7 @@ package heal
 import (
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/k8s"
+	"github.com/teknik-github/PodsMedic/internal/k8s"
 )
 
 // HealRecord is a persisted, applied patch-heal awaiting verification. It holds

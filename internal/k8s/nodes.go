@@ -6,7 +6,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/peceldev/podsmedic/internal/nodes"
+	"github.com/teknik-github/PodsMedic/internal/nodes"
 )
 
 // NodeStates reads every node's conditions and counts the pods placed on each,

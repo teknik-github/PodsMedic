@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/rightsize"
+	"github.com/teknik-github/PodsMedic/internal/rightsize"
 )
 
 // RightsizeInput is everything the rightsizing document is built from.

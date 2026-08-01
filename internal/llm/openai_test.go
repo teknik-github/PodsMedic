@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/peceldev/podsmedic/internal/detect"
-	"github.com/peceldev/podsmedic/internal/k8s"
+	"github.com/teknik-github/PodsMedic/internal/detect"
+	"github.com/teknik-github/PodsMedic/internal/k8s"
 )
 
 // TestOpenAIDiagnoseWireFormat drives the OpenAI-compatible client against a

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/k8s"
+	"github.com/teknik-github/PodsMedic/internal/k8s"
 )
 
 func TestVerifyVerdict(t *testing.T) {

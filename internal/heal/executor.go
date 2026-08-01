@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/peceldev/podsmedic/internal/k8s"
+	"github.com/teknik-github/PodsMedic/internal/k8s"
 )
 
 // ErrGitOpsManaged means the target workload is reconciled from Git (ArgoCD,

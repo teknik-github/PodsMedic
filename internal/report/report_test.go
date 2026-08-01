@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/audit"
-	"github.com/peceldev/podsmedic/internal/playbook"
+	"github.com/teknik-github/PodsMedic/internal/audit"
+	"github.com/teknik-github/PodsMedic/internal/playbook"
 )
 
 var now = time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)

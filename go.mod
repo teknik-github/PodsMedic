@@ -1,4 +1,4 @@
-module github.com/peceldev/podsmedic
+module github.com/teknik-github/PodsMedic
 
 go 1.26.0
 

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/peceldev/podsmedic/internal/k8s"
+	"github.com/teknik-github/PodsMedic/internal/k8s"
 )
 
 // fakeCluster records executor calls and lets a test force a resolution error.

@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/k8s"
-	"github.com/peceldev/podsmedic/internal/live"
-	"github.com/peceldev/podsmedic/internal/metrics"
-	"github.com/peceldev/podsmedic/internal/rightsize"
+	"github.com/teknik-github/PodsMedic/internal/k8s"
+	"github.com/teknik-github/PodsMedic/internal/live"
+	"github.com/teknik-github/PodsMedic/internal/metrics"
+	"github.com/teknik-github/PodsMedic/internal/rightsize"
 )
 
 // rightsizeStateKey is the single ConfigMap data key holding the usage history.

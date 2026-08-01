@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/peceldev/podsmedic/internal/detect"
-	"github.com/peceldev/podsmedic/internal/llm"
+	"github.com/teknik-github/PodsMedic/internal/detect"
+	"github.com/teknik-github/PodsMedic/internal/llm"
 )
 
 // Alert is one finished diagnosis, ready to be delivered.

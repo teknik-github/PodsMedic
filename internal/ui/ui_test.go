@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/live"
+	"github.com/teknik-github/PodsMedic/internal/live"
 )
 
 type stubSource struct{ snap live.Snapshot }

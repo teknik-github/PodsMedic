@@ -1,5 +1,5 @@
 GO ?= go
-IMAGE ?= ghcr.io/peceldev/podsmedic:latest
+IMAGE ?= ghcr.io/teknik-github/podsmedic:latest
 
 .PHONY: build test vet fmt run docker deploy clean
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/k8s"
+	"github.com/teknik-github/PodsMedic/internal/k8s"
 )
 
 // openAIClient calls any OpenAI-compatible /chat/completions endpoint. DeepSeek

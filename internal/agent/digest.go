@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/digest"
-	"github.com/peceldev/podsmedic/internal/metrics"
-	"github.com/peceldev/podsmedic/internal/rightsize"
+	"github.com/teknik-github/PodsMedic/internal/digest"
+	"github.com/teknik-github/PodsMedic/internal/metrics"
+	"github.com/teknik-github/PodsMedic/internal/rightsize"
 )
 
 // maybeDigest sends the daily summary when one is owed.

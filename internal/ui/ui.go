@@ -28,8 +28,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/live"
-	"github.com/peceldev/podsmedic/internal/metrics"
+	"github.com/teknik-github/PodsMedic/internal/live"
+	"github.com/teknik-github/PodsMedic/internal/metrics"
 )
 
 //go:embed globe.html login.html

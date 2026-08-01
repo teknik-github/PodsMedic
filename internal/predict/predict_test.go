@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/peceldev/podsmedic/internal/detect"
+	"github.com/teknik-github/PodsMedic/internal/detect"
 )
 
 const mib = 1 << 20

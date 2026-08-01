@@ -11,11 +11,11 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/peceldev/podsmedic/internal/detect"
-	"github.com/peceldev/podsmedic/internal/heal"
-	"github.com/peceldev/podsmedic/internal/lease"
-	"github.com/peceldev/podsmedic/internal/playbook"
-	"github.com/peceldev/podsmedic/internal/rightsize"
+	"github.com/teknik-github/PodsMedic/internal/detect"
+	"github.com/teknik-github/PodsMedic/internal/heal"
+	"github.com/teknik-github/PodsMedic/internal/lease"
+	"github.com/teknik-github/PodsMedic/internal/playbook"
+	"github.com/teknik-github/PodsMedic/internal/rightsize"
 )
 
 // Config holds every knob podsmedic needs at runtime.
