@@ -131,16 +131,38 @@ func TestWorkloadsOrbitAndStopOnlyWhenTheyFail(t *testing.T) {
 		t.Fatal("orbit angle is not carried across snapshots; every poll would reset the motion")
 	}
 
-	// Motion is the signal, so the OS setting that disables motion has to be
-	// honoured rather than ignored.
-	if !strings.Contains(body, "prefers-reduced-motion") {
-		t.Fatal("expected reduced-motion to be respected")
-	}
-
 	// A stopped workload must not also pulse: something throbbing reads as
 	// alive, which is the opposite of what a halt means.
-	if !strings.Contains(body, "if (!stopped && !STILL)") {
+	if !strings.Contains(body, "if (!stopped && !still)") {
 		t.Fatal("expected the wake to be dropped for a stopped workload")
+	}
+}
+
+func TestSuppressedMotionSaysSoAndCanBeOverridden(t *testing.T) {
+	// Found by measuring a real browser: with prefers-reduced-motion set, all 21
+	// orbiting workloads sat at exactly 0 px/s and nothing on the page explained
+	// why. Honouring the setting is right; doing it silently is not, because
+	// "the orbits stopped" then looks identical to "the page is dead" — the same
+	// ambiguity the daily digest exists to remove elsewhere in this codebase.
+	s, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "prefers-reduced-motion") {
+		t.Fatal("the OS reduced-motion setting must still be honoured by default")
+	}
+	if !strings.Contains(body, `id="motion"`) {
+		t.Fatal("the motion state must be visible, or a frozen page reads as a broken one")
+	}
+	// The override, and the fact that it persists: a viewer who needs motion on
+	// this particular page should not have to re-enable it every visit.
+	if !strings.Contains(body, "podsmedic.motion") {
+		t.Fatal("expected the motion override to be remembered")
+	}
+	// The legend must not claim things orbit while they are held still.
+	if !strings.Contains(body, "body.still #legend .m-on") {
+		t.Fatal("the legend has to follow the motion state")
 	}
 }
 

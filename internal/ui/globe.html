@@ -33,7 +33,12 @@
   #head .stat b { color:var(--ink); font-weight:600; }
   #focus { color:var(--diagnose); pointer-events:auto; cursor:pointer; display:none; }
   #focus.on { display:inline; }
-  #state { margin-left:auto; color:var(--dim); }
+  #state { color:var(--dim); }
+  /* The motion state is always shown. A frozen page that says nothing is
+     indistinguishable from a broken one. */
+  #motion { margin-left:auto; pointer-events:auto; cursor:pointer; color:var(--dim); }
+  #motion:hover b { color:var(--diagnose); }
+  body.still #legend .m-on, body:not(.still) #legend .m-off { display:none; }
   /* #head is a .panel, which is pointer-events:none so the globe stays
      draggable underneath; anything clickable in it has to opt back in. */
   #signout { pointer-events:auto; }
@@ -100,6 +105,7 @@
   <span class="stat">problems <b id="s-prob">–</b></span>
   <span class="stat">incidents <b id="s-inc">–</b></span>
   <span id="focus"></span>
+  <span class="stat" id="motion"></span>
   <span class="stat" id="state">feed <b>connecting</b></span>
   <!--SIGNOUT-->
 </div>
@@ -115,8 +121,8 @@
   <div><i style="background:var(--rollback)"></i>rolled back</div>
   <div><i style="background:var(--declined)"></i>declined</div>
   <div class="grouphead">orbit</div>
-  <div><i class="orbiting"></i>orbiting — healthy</div>
-  <div><i class="halted"></i>stopped — has a problem</div>
+  <div><i class="orbiting"></i><span class="m-on">orbiting — healthy</span><span class="m-off">healthy</span></div>
+  <div><i class="halted"></i><span class="m-on">stopped — has a problem</span><span class="m-off">has a problem</span></div>
 </div>
 
 <div class="panel" id="detail"><span class="close" id="d-close">×</span>
@@ -178,12 +184,45 @@
   let sweepAt = 0, sweepIntervalMs = 60000, sweepPulse = 0;
   const MAX_WIRES = 60;
 
-  // Motion is the primary signal on this page, so respecting the OS setting is
-  // not decoration. With reduced motion the orbits hold still and colour carries
-  // the state on its own — which is also why colour is never the *only* cue for
-  // a stopped workload: it gets a halo and a dropped trail too.
-  const STILL = window.matchMedia &&
-                window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // Motion is the primary signal on this page, so the OS reduced-motion setting
+  // is honoured — but never silently.
+  //
+  // The first version just froze everything when the system asked for reduced
+  // motion, which made the page look broken: measured in a browser, all 21
+  // orbiting workloads sat at exactly 0 px/s with nothing on screen saying why.
+  // "The orbits stopped" and "the page is dead" have to be tellable apart, so
+  // the state is always shown, always says whose decision it was, and can be
+  // overridden here — this one page's whole function depends on motion, and
+  // that is a choice the person looking at it should get to make.
+  const SYSTEM_STILL = !!(window.matchMedia &&
+                          window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const MOTION_KEY = "podsmedic.motion";
+
+  function motionOverride() {
+    try { return localStorage.getItem(MOTION_KEY); } catch (e) { return null; }
+  }
+  let still = motionOverride() ? motionOverride() === "off" : SYSTEM_STILL;
+
+  const motionEl = document.getElementById("motion");
+  function renderMotion() {
+    const bySystem = still && motionOverride() !== "off";
+    motionEl.innerHTML = still
+      ? "motion <b>off</b>" + (bySystem ? " · system" : "")
+      : "motion <b>on</b>";
+    motionEl.title = still
+      ? (bySystem
+          ? "Your system asks for reduced motion, so the orbits are held still. "
+            + "Click to run them anyway — a stopped workload is still marked in red either way."
+          : "Motion is off. Click to turn it back on.")
+      : "Workloads orbit; one with a problem stops. Click to hold them still.";
+    document.body.classList.toggle("still", still);
+  }
+  motionEl.addEventListener("click", () => {
+    still = !still;
+    try { localStorage.setItem(MOTION_KEY, still ? "off" : "on"); } catch (e) { /* private mode */ }
+    renderMotion();
+  });
+  renderMotion();
 
   function ringRadius() { return Math.min(W, H) * 0.36; }
   function globeRadius() { return Math.min(W, H) * 0.24; }
@@ -259,7 +298,7 @@
   // advance steps every orbit that is still running. dt is milliseconds, clamped
   // by the caller, so a backgrounded tab resumes rather than teleporting.
   function advance(dt) {
-    if (STILL) return;
+    if (still) return;
     const s = dt / 1000;
     for (const w of workloads.values()) {
       if (!w.shell || stalled(w)) continue;
@@ -514,7 +553,7 @@
 
       // The wake. A stopped workload has none, and its absence is the signal:
       // every neighbour is a comet and this one is a full stop.
-      if (!stopped && !STILL) {
+      if (!stopped && !still) {
         ctx.save();
         ctx.globalCompositeOperation = "lighter";
         for (let i = 1; i <= TRAIL_N; i++) {
