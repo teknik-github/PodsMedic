@@ -1,0 +1,116 @@
+# An in-cluster image registry, for clusters with nowhere else to put an image.
+#
+# OPTIONAL, and SINGLE-NODE ONLY. Skip this entirely if you push to Docker Hub,
+# GHCR, or any registry your nodes can already reach.
+#
+# The point of this manifest is to avoid touching the node at all — no
+# /etc/rancher/k3s/registries.yaml, no insecure-registry flag, no SSH:
+#
+#   * hostPort 5000 bound to hostIP 127.0.0.1 puts the registry on the node's
+#     own loopback. containerd treats a localhost registry as insecure by
+#     default, so it pulls over plain HTTP with no configuration. Binding to
+#     loopback rather than 0.0.0.0 also keeps the registry off the LAN, which
+#     matters because it has no authentication whatsoever.
+#   * Pushing from a workstation goes through `kubectl port-forward`, which
+#     reaches the pod directly rather than via hostPort — so the loopback
+#     binding costs you nothing.
+#
+# Images are therefore referenced as  localhost:5000/<name>:<tag>  and that
+# string means "the node's own registry" at pull time.
+#
+#   kubectl apply -f deploy/local-registry.yaml
+#   kubectl -n registry rollout status deploy/registry
+#   kubectl -n registry port-forward svc/registry 5000:5000 &
+#   docker tag podsmedic:v1 localhost:5000/podsmedic:v1
+#   docker push localhost:5000/podsmedic:v1
+#
+# On a multi-node cluster only the node running this pod has the images, so use
+# a real registry instead.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: registry
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry
+  namespace: registry
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # Named explicitly rather than relying on the cluster default: a cluster with
+  # two classes marked default makes "the default" ambiguous.
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: registry
+  labels:
+    app.kubernetes.io/name: registry
+spec:
+  replicas: 1
+  strategy:
+    # The volume is ReadWriteOnce and hostPort 5000 is exclusive, so the old pod
+    # must be gone before the new one starts.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry
+    spec:
+      containers:
+        - name: registry
+          image: registry:2
+          env:
+            - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
+              value: /var/lib/registry
+            # Allow re-pushing the same tag during development.
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 5000
+              # Loopback only: containerd on this node can reach it, the LAN
+              # cannot. The registry has no auth, so this is the security
+              # boundary.
+              hostIP: 127.0.0.1
+              hostPort: 5000
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/registry
+          livenessProbe:
+            httpGet: {path: /v2/, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: {path: /v2/, port: http}
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 512Mi}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: registry
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  namespace: registry
+spec:
+  selector:
+    app.kubernetes.io/name: registry
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http

@@ -1,0 +1,68 @@
+# Extra RBAC for auto-heal. Apply this ONLY when running with
+# PODSMEDIC_AUTOHEAL=true — it grants write access to workload controllers, which
+# the read-only base role (rbac.yaml) deliberately withholds.
+#
+# Scope is intentionally narrow: patch on Deployments/StatefulSets/DaemonSets
+# only. No create, no delete, no access to pods, secrets, or any other resource.
+# podsmedic can raise resource limits and trigger rollout restarts — nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: podsmedic-autoheal
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "patch"]
+  # Owner-reference walk from a pod's ReplicaSet up to its Deployment.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get"]
+  # Creating a PersistentVolumeClaim a pod references but that was never created.
+  # CREATE ONLY — deliberately no update, patch, or delete: podsmedic can bring a
+  # forgotten claim into existence, and can never modify or remove one. Needed
+  # only with PODSMEDIC_PVC_AUTOCREATE=true; omit this rule to keep it impossible.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create"]
+---
+# ConfigMaps in podsmedic's own namespace hold its state: pending heals awaiting
+# verification (so a restart does not forget them), open incidents (so a restart
+# does not re-alert them), the durable heal audit trail, and the learned-heal
+# playbook. Namespaced and scoped to that purpose — no access to ConfigMaps
+# anywhere else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: podsmedic-heal-state
+  namespace: podsmedic
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: podsmedic-heal-state
+  namespace: podsmedic
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: podsmedic-heal-state
+subjects:
+  - kind: ServiceAccount
+    name: podsmedic
+    namespace: podsmedic
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: podsmedic-autoheal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: podsmedic-autoheal
+subjects:
+  - kind: ServiceAccount
+    name: podsmedic
+    namespace: podsmedic

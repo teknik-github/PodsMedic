@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>podsmedic — sign in</title>
+<style>
+  :root { --bg:#070a0f; --ink:#c8d4e4; --dim:#5a6a80; --rule:#16202e;
+          --accent:#4aa8ff; --problem:#ff4d5e; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; }
+  body { background:var(--bg); color:var(--ink); display:flex;
+         align-items:center; justify-content:center; padding:24px;
+         font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  form { width:min(360px,100%); display:flex; flex-direction:column; gap:14px; }
+  h1 { font-size:13px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; }
+  p { color:var(--dim); font-size:12px; }
+  input { width:100%; padding:10px 12px; background:#0c1119; color:var(--ink);
+          border:1px solid var(--rule); border-radius:4px; font:inherit; }
+  input:focus { outline:none; border-color:var(--accent); }
+  button { padding:10px 12px; background:var(--accent); color:#04070c;
+           border:0; border-radius:4px; font:inherit; font-weight:600;
+           letter-spacing:.06em; cursor:pointer; }
+  .err { color:var(--problem); font-size:12px; }
+</style>
+</head>
+<body>
+<form method="post" action="/login">
+  <h1>podsmedic</h1>
+  <!--ERROR-->
+  <input type="password" name="token" placeholder="access token" autofocus
+         autocomplete="current-password" aria-label="access token">
+  <button type="submit">Sign in</button>
+  <p>The token is PODSMEDIC_UI_TOKEN. This page has no TLS: over an untrusted
+     network, reach it through <code>kubectl port-forward</code> instead.</p>
+</form>
+</body>
+</html>

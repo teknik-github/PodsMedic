@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>podsmedic — live</title>
+<style>
+  :root {
+    --bg:#070a0f; --ink:#c8d4e4; --dim:#5a6a80; --rule:#16202e;
+    --problem:#ff4d5e; --restart:#ffab3d; --recovery:#38d996;
+    --diagnose:#4aa8ff; --heal:#38d996; --verify:#7ee0b8;
+    --rollback:#ffab3d; --declined:#7b8aa0; --gone:#3d4a5c;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; }
+  body {
+    background:var(--bg); color:var(--ink); overflow:hidden;
+    font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  /* width/height are required, not decorative. A <canvas> is a replaced element
+     with an intrinsic 300x150, and for an absolutely positioned replaced element
+     `width:auto` resolves to that intrinsic size — inset:0 does NOT stretch it.
+     Without these the canvas sits 300x150 in the top-left corner and everything
+     draws inside that box. */
+  canvas { display:block; position:fixed; inset:0; width:100%; height:100%; cursor:default; }
+  canvas.pick { cursor:pointer; }
+
+  .panel { position:fixed; z-index:2; pointer-events:none; }
+  #head { top:0; left:0; right:0; padding:14px 18px;
+          display:flex; gap:22px; align-items:baseline; flex-wrap:wrap; }
+  #head h1 { font-size:13px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; }
+  #head .stat { color:var(--dim); }
+  #head .stat b { color:var(--ink); font-weight:600; }
+  #focus { color:var(--diagnose); pointer-events:auto; cursor:pointer; display:none; }
+  #focus.on { display:inline; }
+  #state { margin-left:auto; color:var(--dim); }
+  /* #head is a .panel, which is pointer-events:none so the globe stays
+     draggable underneath; anything clickable in it has to opt back in. */
+  #signout { pointer-events:auto; }
+  #signout button { background:none; border:0; padding:0; font:inherit;
+                    color:var(--dim); cursor:pointer; }
+  #signout button:hover { color:var(--ink); }
+  #state.live b { color:var(--recovery); }
+  #state.down b { color:var(--problem); }
+
+  #legend { bottom:14px; left:18px; display:flex; flex-direction:column; gap:5px; }
+  #legend div { color:var(--dim); display:flex; align-items:center; gap:8px; }
+  #legend i { width:16px; height:2px; display:inline-block; border-radius:2px; }
+  #legend .grouphead { color:var(--ink); margin-top:6px; letter-spacing:.1em;
+                       font-size:11px; text-transform:uppercase; }
+
+  /* Deliberately small. At 460x468 this panel covered 5 of 25 workload nodes on
+     a 1440x900 screen — measured, not guessed. The globe is the point; the feed
+     is a ticker, and a few lines is plenty for one. */
+  #feed { bottom:14px; right:18px; width:min(400px,34vw);
+          display:flex; flex-direction:column-reverse; gap:2px;
+          max-height:22vh; overflow:hidden;
+          /* Older lines fade out rather than ending in a hard edge. */
+          -webkit-mask-image:linear-gradient(to top, #000 55%, transparent);
+          mask-image:linear-gradient(to top, #000 55%, transparent); }
+  #feed div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+              opacity:.85; font-size:11px; }
+  #feed .t { color:var(--dim); }
+  #feed .w { color:var(--ink); }
+
+  #detail { top:60px; right:18px; width:min(320px,28vw); pointer-events:auto;
+            background:rgba(10,15,22,0.94); border:1px solid var(--rule);
+            border-radius:6px; padding:12px 14px; display:none; }
+  #detail.on { display:block; }
+  #detail h2 { font-size:12px; font-weight:600; margin-bottom:2px; word-break:break-all;
+               padding-right:14px; }
+  #detail .ns { color:var(--dim); font-size:11px; margin-bottom:10px; }
+  #detail dl { display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-size:11px; }
+  #detail dt { color:var(--dim); }
+  #detail .evhead { color:var(--ink); font-size:10px; letter-spacing:.1em;
+                    text-transform:uppercase; margin:12px 0 5px; }
+  #detail .ev { font-size:11px; color:var(--dim); white-space:nowrap;
+                overflow:hidden; text-overflow:ellipsis; }
+  #detail .close { position:absolute; top:7px; right:11px; color:var(--dim); cursor:pointer; }
+  #detail .close:hover { color:var(--ink); }
+
+  #empty { position:fixed; inset:0; display:grid; place-items:center;
+           color:var(--dim); z-index:1; text-align:center; line-height:2; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="panel" id="head">
+  <h1>podsmedic</h1>
+  <span class="stat">pods <b id="s-pods">–</b></span>
+  <span class="stat">workloads <b id="s-work">–</b></span>
+  <span class="stat">problems <b id="s-prob">–</b></span>
+  <span class="stat">incidents <b id="s-inc">–</b></span>
+  <span id="focus"></span>
+  <span class="stat" id="state">feed <b>connecting</b></span>
+  <!--SIGNOUT-->
+</div>
+
+<div class="panel" id="legend">
+  <div class="grouphead">cluster → globe</div>
+  <div><i style="background:var(--problem)"></i>failing</div>
+  <div><i style="background:var(--restart)"></i>restarted</div>
+  <div><i style="background:var(--recovery)"></i>recovered</div>
+  <div class="grouphead">globe → workload</div>
+  <div><i style="background:var(--diagnose)"></i>diagnosing</div>
+  <div><i style="background:var(--heal)"></i>healed</div>
+  <div><i style="background:var(--rollback)"></i>rolled back</div>
+  <div><i style="background:var(--declined)"></i>declined</div>
+</div>
+
+<div class="panel" id="detail"><span class="close" id="d-close">×</span>
+  <h2 id="d-name"></h2><div class="ns" id="d-ns"></div>
+  <dl id="d-facts"></dl>
+  <div class="evhead">recent</div>
+  <div id="d-events"></div>
+</div>
+
+<div class="panel" id="feed"></div>
+<div id="empty">waiting for the first sweep…</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const COLOR = {
+    problem:"#ff4d5e", restart:"#ffab3d", recovery:"#38d996", gone:"#3d4a5c",
+    diagnose:"#4aa8ff", heal:"#38d996", verify:"#7ee0b8",
+    rollback:"#ffab3d", declined:"#7b8aa0",
+  };
+  const FROM_PODSMEDIC = new Set(["diagnose","heal","verify","rollback","declined"]);
+  // Namespace tints, chosen to stay apart from the event colours, which carry
+  // their own meaning and must not be confused with grouping.
+  const NS_TINTS = ["#6f8fb5","#a98fc4","#7fb0a0","#c49a6f","#8f9fd0","#b58fa0","#8fb5a8"];
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  let W = 0, H = 0, DPR = 1;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = canvas.clientWidth; H = canvas.clientHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+
+  // ---- the globe -----------------------------------------------------------
+  // A Fibonacci sphere: points spaced evenly without clustering at the poles,
+  // which is what a naive lat/long grid does. No regions, no landmasses — the
+  // globe stands for the cluster, not the Earth.
+  const DOTS = (() => {
+    const n = 900, pts = [], golden = Math.PI * (3 - Math.sqrt(5));
+    for (let i = 0; i < n; i++) {
+      const y = 1 - (i / (n - 1)) * 2;
+      const r = Math.sqrt(Math.max(0, 1 - y * y));
+      const th = golden * i;
+      pts.push([Math.cos(th) * r, y, Math.sin(th) * r]);
+    }
+    return pts;
+  })();
+
+  // ---- state ---------------------------------------------------------------
+  let workloads = new Map();
+  let arcs = [];
+  let wires = [];
+  let spin = 0, hover = null, selected = null, focusNS = null;
+  let sweepAt = 0, sweepIntervalMs = 60000, sweepPulse = 0;
+  const MAX_WIRES = 60;
+
+  // Ellipse factors. Narrower than the first attempt: the horizontal stretch is
+  // what pushed nodes under the bottom-right feed panel.
+  const RING_X = 1.18, RING_Y = 0.82;
+  function ringRadius() { return Math.min(W, H) * 0.38; }
+  function globeRadius() { return Math.min(W, H) * 0.24; }
+
+  function visible(w) { return !focusNS || w.namespace === focusNS; }
+
+  // Lays workloads out in one arc per namespace, spaced evenly within each.
+  //
+  // Two earlier versions were worse. Hashing the name to an angle was stable but
+  // collided — on a real 24-workload cluster two landed 0.0 degrees apart. Plain
+  // alphabetical spacing fixed the collisions but interleaved namespaces, and on
+  // that same cluster 68% of the ring was longhorn-system and kube-system, so
+  // the handful of workloads anyone cared about sat scattered among
+  // infrastructure. Grouping turns the ring from a list into a map.
+  const GAP = 0.055; // radians of empty space between namespace bands
+
+  function relayout() {
+    const shown = [...workloads.values()].filter(visible);
+    const byNS = new Map();
+    for (const w of shown) {
+      if (!byNS.has(w.namespace)) byNS.set(w.namespace, []);
+      byNS.get(w.namespace).push(w);
+    }
+    const names = [...byNS.keys()].sort();
+    const total = shown.length || 1;
+    const usable = Math.PI * 2 - GAP * Math.max(names.length, 1);
+
+    arcs = [];
+    let a = -Math.PI / 2 + GAP / 2;
+    names.forEach((ns, idx) => {
+      const list = byNS.get(ns).sort((x, y) => x.key.localeCompare(y.key));
+      const span = usable * (list.length / total);
+      const step = span / list.length;
+      // Half-step inset keeps the first and last node off the band's own edge.
+      list.forEach((w, i) => { w.angle = a + step * (i + 0.5); });
+      arcs.push({ ns, start: a, end: a + span, mid: a + span / 2,
+                  count: list.length, tint: NS_TINTS[idx % NS_TINTS.length] });
+      a += span + GAP;
+    });
+  }
+
+  function setWorkloads(list) {
+    const next = new Map();
+    for (const w of list || []) {
+      const prev = workloads.get(w.key);
+      next.set(w.key, Object.assign({ events: prev ? prev.events : [],
+                                      lit: prev ? prev.lit : 0 }, w));
+    }
+    workloads = next;
+    relayout();
+    document.getElementById("s-work").textContent = workloads.size;
+    document.getElementById("empty").style.display = workloads.size ? "none" : "grid";
+    if (selected && !workloads.has(selected)) closeDetail();
+    else if (selected) renderDetail();
+  }
+
+  // An event about something the last sweep did not list still deserves a wire —
+  // a pod can appear and fail between sweeps.
+  function ensureWorkload(ev) {
+    const key = ev.workload ? ev.namespace + "/" + ev.workload : ev.namespace + "/" + ev.pod;
+    if (!workloads.has(key)) {
+      workloads.set(key, {
+        key, namespace: ev.namespace, name: ev.workload || ev.pod,
+        pods: 1, ready: 0, problems: 0, angle: 0, events: [], lit: 0,
+      });
+      relayout();
+      document.getElementById("s-work").textContent = workloads.size;
+      document.getElementById("empty").style.display = "none";
+    }
+    return key;
+  }
+
+  function addWire(ev) {
+    const key = ensureWorkload(ev);
+    const w = workloads.get(key);
+    w.lit = performance.now();
+    w.events.unshift(ev);
+    if (w.events.length > 8) w.events.pop();
+    if (ev.class === "problem") w.problems = (w.problems || 0) + 1;
+    if (ev.class === "recovery") w.problems = Math.max(0, (w.problems || 0) - 1);
+    if (selected === key) renderDetail();
+
+    if (!visible(w)) return; // focused elsewhere: record it, do not draw it
+    wires.push({
+      key,
+      color: COLOR[ev.class] || "#7b8aa0",
+      inbound: FROM_PODSMEDIC.has(ev.class),
+      born: performance.now(),
+      life: FROM_PODSMEDIC.has(ev.class) ? 3400 : 2800,
+    });
+    if (wires.length > MAX_WIRES) wires = wires.slice(-MAX_WIRES);
+  }
+
+  // ---- geometry ------------------------------------------------------------
+  function workloadXY(w) {
+    const cx = W / 2, cy = H / 2, r = ringRadius();
+    return [cx + Math.cos(w.angle) * r * RING_X, cy + Math.sin(w.angle) * r * RING_Y];
+  }
+
+  // Node radius carries the replica count. Square-rooted and capped, so a
+  // 30-replica Deployment does not swallow its neighbours.
+  function nodeRadius(w) {
+    return Math.min(3.2 + Math.sqrt(Math.max(w.pods || 1, 1)) * 1.5, 11);
+  }
+
+  // ---- drawing -------------------------------------------------------------
+  function drawGlobe() {
+    const cx = W / 2, cy = H / 2, R = globeRadius();
+    spin += 0.0016;
+
+    const glow = ctx.createRadialGradient(cx, cy, R * 0.1, cx, cy, R * 1.7);
+    glow.addColorStop(0, "rgba(74,168,255,0.13)");
+    glow.addColorStop(1, "rgba(74,168,255,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.7, 0, Math.PI * 2); ctx.fill();
+
+    // A faint limb. Dots alone read as a cloud; one circle at the silhouette is
+    // what makes the eye resolve them into a surface.
+    ctx.strokeStyle = "rgba(74,168,255,0.16)";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+
+    const cosS = Math.cos(spin), sinS = Math.sin(spin);
+    const tilt = 0.42, cosT = Math.cos(tilt), sinT = Math.sin(tilt);
+    const CAM = 3.2;
+
+    for (const [x0, y0, z0] of DOTS) {
+      const x1 = x0 * cosS + z0 * sinS;
+      const z1 = -x0 * sinS + z0 * cosS;
+      const y2 = y0 * cosT - z1 * sinT;
+      const z2 = y0 * sinT + z1 * cosT;
+
+      const k = CAM / (CAM - z2);            // weak perspective
+      const px = cx + x1 * R * k, py = cy + y2 * R * k;
+      const depth = (z2 + 1) / 2;
+      const alpha = z2 < 0 ? 0.10 + depth * 0.22 : 0.34 + depth * 0.62;
+      const size = (z2 < 0 ? 0.6 : 0.9 + depth * 1.3) * k * 0.85;
+
+      ctx.fillStyle = `rgba(126,196,255,${alpha.toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(px, py, size, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // The heartbeat. Without it a healthy cluster is a completely static picture,
+  // and "everything is fine" looks exactly like "the feed died".
+  function drawHeartbeat(now) {
+    const cx = W / 2, cy = H / 2, R = globeRadius();
+    const ring = R * 1.14;
+
+    ctx.strokeStyle = "rgba(74,168,255,0.09)";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, ring, 0, Math.PI * 2); ctx.stroke();
+
+    // Progress toward the next sweep, advanced from the local clock so it moves
+    // smoothly between snapshot polls.
+    if (sweepAt) {
+      const p = Math.min((Date.now() - sweepAt) / sweepIntervalMs, 1);
+      ctx.strokeStyle = "rgba(126,196,255,0.42)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, ring, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p);
+      ctx.stroke();
+    }
+
+    if (sweepPulse) {
+      const p = (now - sweepPulse) / 1400;
+      if (p >= 1) sweepPulse = 0;
+      else {
+        ctx.strokeStyle = `rgba(126,196,255,${(0.34 * (1 - p)).toFixed(3)})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(cx, cy, ring + p * R * 0.9, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+  }
+
+  function drawArcs() {
+    const cx = W / 2, cy = H / 2, r = ringRadius();
+    for (const arc of arcs) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(RING_X, RING_Y);
+      ctx.strokeStyle = arc.tint + "44";
+      ctx.lineWidth = 1.5 / Math.max(RING_X, RING_Y);
+      ctx.beginPath(); ctx.arc(0, 0, r * 1.10, arc.start, arc.end); ctx.stroke();
+      ctx.restore();
+
+      const lx = cx + Math.cos(arc.mid) * r * RING_X * 1.19;
+      const ly = cy + Math.sin(arc.mid) * r * RING_Y * 1.19;
+      const label = arc.ns + " · " + arc.count;
+      ctx.font = "10px ui-monospace,Menlo,monospace";
+      const right = lx >= cx;
+      ctx.textAlign = right ? "left" : "right";
+      const tw = ctx.measureText(label).width;
+      arc.hit = { x: lx, y: ly, w: tw, right };
+
+      ctx.fillStyle = "rgba(7,10,15,0.78)";
+      ctx.fillRect(right ? lx - 4 : lx - tw - 4, ly - 8, tw + 8, 16);
+      ctx.fillStyle = arc.ns === focusNS ? "#e6eefc" : arc.tint;
+      ctx.fillText(label, lx, ly + 3.5);
+    }
+  }
+
+  function shortName(name) {
+    const i = name.indexOf("/");
+    return i >= 0 ? name.slice(i + 1) : name;
+  }
+
+  function drawWorkloads(now) {
+    // Labels cannot all fit. Measured on a real 24-workload cluster: 3858px of
+    // text around a 2565px ring. So label what a viewer is looking for —
+    // anything unhealthy, anything that just did something, the selection, and
+    // whatever the pointer is near — and leave the quiet majority as dots.
+    for (const w of workloads.values()) {
+      if (!visible(w)) continue;
+      const [x, y] = workloadXY(w);
+      const unhealthy = (w.problems || 0) > 0;
+      // Pods that finished successfully are not missing replicas. Without this a
+      // completed Job reads as a permanently degraded workload.
+      const serving = (w.pods || 0) - (w.done || 0);
+      const degraded = serving > 0 && (w.ready || 0) < serving;
+      const active = w.lit && now - w.lit < 6000;
+      const hovered = hover === w.key, chosen = selected === w.key;
+      const rad = nodeRadius(w);
+
+      let color = "#4d6480";
+      if (unhealthy) color = "#ff4d5e";
+      else if (degraded) color = "#ffab3d";
+
+      if (unhealthy || active) {
+        const pulse = rad + 5 + Math.sin(now / 380) * 2;
+        ctx.strokeStyle = unhealthy ? "rgba(255,77,94,0.30)" : "rgba(120,200,255,0.30)";
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(x, y, pulse, 0, Math.PI * 2); ctx.stroke();
+      }
+      if (chosen) {
+        ctx.strokeStyle = "rgba(230,238,252,0.75)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(x, y, rad + 4, 0, Math.PI * 2); ctx.stroke();
+      }
+
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.fill();
+
+      if (!(unhealthy || degraded || active || hovered || chosen)) continue;
+
+      const label = shortName(w.name) + (w.pods > 1 ? " ×" + w.pods : "");
+      const right = x >= W / 2;
+      ctx.font = (hovered || chosen) ? "600 11px ui-monospace,Menlo,monospace"
+                                     : "10px ui-monospace,Menlo,monospace";
+      ctx.textAlign = right ? "left" : "right";
+      const tx = x + (right ? rad + 7 : -(rad + 7));
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = "rgba(7,10,15,0.72)";
+      ctx.fillRect(right ? tx - 3 : tx - tw - 3, y - 7, tw + 6, 14);
+      ctx.fillStyle = (hovered || chosen) ? "#e6eefc" : "rgba(200,212,228,0.78)";
+      ctx.fillText(label, tx, y + 3.5);
+    }
+  }
+
+  function drawWires(now) {
+    const cx = W / 2, cy = H / 2, R = globeRadius();
+    wires = wires.filter((wire) => now - wire.born < wire.life);
+
+    // Additive blending: overlapping wires brighten instead of muddying, which
+    // is what makes several at once read as light rather than a tangle.
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.lineCap = "round";
+
+    for (const wire of wires) {
+      const w = workloads.get(wire.key);
+      if (!w || !visible(w)) continue;
+      const [x, y] = workloadXY(w);
+      const p = (now - wire.born) / wire.life;
+      const fade = p < 0.12 ? p / 0.12 : 1 - (p - 0.12) / 0.88;
+
+      // Start at the globe's limb rather than dead centre. A line drawn through
+      // 900 dots loses its inner half in the noise; leaving the sphere gives it
+      // a clean origin and makes the direction legible from the first pixel.
+      const dx = x - cx, dy = y - cy;
+      const len0 = Math.hypot(dx, dy) || 1;
+      const sx = cx + (dx / len0) * R * 1.04;
+      const sy = cy + (dy / len0) * R * 1.04;
+
+      // Bow the line away from centre so overlapping wires stay legible.
+      const mx = (sx + x) / 2, my = (sy + y) / 2;
+      const nx = -dy, ny = dx;
+      const bow = Math.min(W, H) * 0.055;
+      const bx = mx + (nx / len0) * bow, by = my + (ny / len0) * bow;
+
+      const at = (t) => {
+        const u = (1 - t) * (1 - t), v = 2 * (1 - t) * t, s2 = t * t;
+        return [u * sx + v * bx + s2 * x, u * sy + v * by + s2 * y];
+      };
+
+      // The line itself: a soft wide pass under a bright narrow one.
+      ctx.strokeStyle = wire.color;
+      ctx.globalAlpha = 0.10 + fade * 0.22;
+      ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo(bx, by, x, y); ctx.stroke();
+
+      ctx.globalAlpha = 0.22 + fade * 0.68;
+      ctx.lineWidth = 1.7;
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo(bx, by, x, y); ctx.stroke();
+
+      // A comet, not a dot. The tail is what makes the direction unmistakable
+      // at a glance: outward when podsmedic acts on a workload, inward when the
+      // cluster reports something. That direction is the whole grammar — it
+      // says who did what to whom.
+      const q = wire.inbound ? p : 1 - p;
+      for (let i = 0; i < 6; i++) {
+        // Trail behind the head, which means the opposite way for each direction.
+        const back = i * 0.045 * (wire.inbound ? -1 : 1);
+        const t = Math.min(Math.max(q + back, 0), 1);
+        const [px, py] = at(t);
+        ctx.globalAlpha = fade * (1 - i / 6) * 0.9;
+        ctx.fillStyle = wire.color;
+        ctx.beginPath(); ctx.arc(px, py, 3.4 - i * 0.42, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // A flash where the pulse lands, so an arrival is a moment rather than a
+      // fade-out nobody notices.
+      const arrived = wire.inbound ? p > 0.82 : p > 0.82;
+      if (arrived) {
+        const [ex, ey] = wire.inbound ? [sx, sy] : [x, y];
+        const k = (p - 0.82) / 0.18;
+        ctx.globalAlpha = (1 - k) * 0.55;
+        ctx.strokeStyle = wire.color;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.arc(ex, ey, 5 + k * 14, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  function frame() {
+    ctx.clearRect(0, 0, W, H);
+    const now = performance.now();
+    drawGlobe();
+    drawHeartbeat(now);
+    drawArcs();
+    drawWires(now);
+    drawWorkloads(now);
+    requestAnimationFrame(frame);
+  }
+
+  // ---- detail panel --------------------------------------------------------
+  const detail = document.getElementById("detail");
+
+  function renderDetail() {
+    const w = workloads.get(selected);
+    if (!w) { closeDetail(); return; }
+    document.getElementById("d-name").textContent = w.name;
+    document.getElementById("d-ns").textContent = w.namespace;
+
+    const dl = document.getElementById("d-facts");
+    dl.replaceChildren();
+    for (const [k, v] of [
+      ["pods", String(w.pods ?? "–")],
+      ["ready", (w.ready ?? 0) + " / " + ((w.pods ?? 0) - (w.done ?? 0))],
+      ...(w.done ? [["completed", String(w.done)]] : []),
+      ["problems", String(w.problems || 0)],
+    ]) {
+      const dt = document.createElement("dt"); dt.textContent = k;
+      const dd = document.createElement("dd"); dd.textContent = v;
+      dl.append(dt, dd);
+    }
+
+    const box = document.getElementById("d-events");
+    box.replaceChildren();
+    if (!w.events.length) {
+      const d = document.createElement("div");
+      d.className = "ev"; d.textContent = "nothing yet";
+      box.append(d);
+    }
+    for (const ev of w.events) {
+      const d = document.createElement("div");
+      d.className = "ev";
+      const c = document.createElement("span");
+      c.style.color = COLOR[ev.class] || "#7b8aa0";
+      c.textContent = ev.class + " ";
+      d.append(c, document.createTextNode(ev.detail || ev.reason || ""));
+      box.append(d);
+    }
+    detail.classList.add("on");
+  }
+
+  function closeDetail() { selected = null; detail.classList.remove("on"); }
+  document.getElementById("d-close").addEventListener("click", closeDetail);
+
+  // ---- focus ---------------------------------------------------------------
+  const focusEl = document.getElementById("focus");
+  function setFocus(ns) {
+    focusNS = ns;
+    focusEl.textContent = ns ? "focus: " + ns + "  ✕" : "";
+    focusEl.classList.toggle("on", !!ns);
+    wires = [];        // wires belong to the old layout; their endpoints moved
+    relayout();
+  }
+  focusEl.addEventListener("click", () => setFocus(null));
+
+  // ---- pointer -------------------------------------------------------------
+  function nodeAt(mx, my) {
+    let best = null, bestD = 20 * 20;
+    for (const w of workloads.values()) {
+      if (!visible(w)) continue;
+      const [x, y] = workloadXY(w);
+      const d = (x - mx) * (x - mx) + (y - my) * (y - my);
+      if (d < bestD) { bestD = d; best = w.key; }
+    }
+    return best;
+  }
+
+  function arcLabelAt(mx, my) {
+    for (const a of arcs) {
+      const h = a.hit;
+      if (!h) continue;
+      const l = h.right ? h.x - 4 : h.x - h.w - 4;
+      if (mx >= l && mx <= l + h.w + 8 && my >= h.y - 8 && my <= h.y + 8) return a.ns;
+    }
+    return null;
+  }
+
+  canvas.addEventListener("mousemove", (e) => {
+    hover = nodeAt(e.clientX, e.clientY);
+    canvas.classList.toggle("pick", !!(hover || arcLabelAt(e.clientX, e.clientY)));
+  });
+  canvas.addEventListener("mouseleave", () => { hover = null; });
+
+  canvas.addEventListener("click", (e) => {
+    const ns = arcLabelAt(e.clientX, e.clientY);
+    if (ns) { setFocus(ns === focusNS ? null : ns); return; }
+    const key = nodeAt(e.clientX, e.clientY);
+    if (key) { selected = key; renderDetail(); } else closeDetail();
+  });
+
+  // ---- feed ----------------------------------------------------------------
+  const feed = document.getElementById("feed");
+  function logEvent(ev) {
+    const row = document.createElement("div");
+    const when = new Date(ev.at || Date.now());
+    const pad = (n) => String(n).padStart(2, "0");
+
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = `${pad(when.getHours())}:${pad(when.getMinutes())}:${pad(when.getSeconds())} `;
+    const c = document.createElement("span");
+    c.style.color = COLOR[ev.class] || "#7b8aa0";
+    c.textContent = (ev.class + "        ").slice(0, 9);
+    const w = document.createElement("span");
+    w.className = "w";
+    w.textContent = " " + (ev.workload || ev.pod || ev.namespace) + " ";
+    const d = document.createElement("span");
+    d.className = "t"; d.textContent = ev.detail || ev.reason || "";
+
+    row.append(t, c, w, d);
+    feed.prepend(row);
+    while (feed.childElementCount > 8) feed.lastElementChild.remove();
+  }
+
+  function setStat(id, v) { document.getElementById(id).textContent = v; }
+  function setState(text, cls) {
+    const el = document.getElementById("state");
+    el.className = cls; el.innerHTML = "feed <b>" + text + "</b>";
+  }
+
+  // ---- data ----------------------------------------------------------------
+  async function loadSnapshot() {
+    try {
+      const r = await fetch("api/snapshot", {cache: "no-store"});
+      const s = await r.json();
+      setStat("s-pods", s.pods ?? "–");
+      setStat("s-prob", s.problems ?? "–");
+      setStat("s-inc", s.incidents ?? "–");
+      if (s.intervalSec) sweepIntervalMs = s.intervalSec * 1000;
+      if (typeof s.sweepAgeSec === "number") sweepAt = Date.now() - s.sweepAgeSec * 1000;
+      setWorkloads(s.workloads);
+      feed.replaceChildren();
+      for (const ev of (s.events || [])) logEvent(ev);
+    } catch (e) {
+      setState("snapshot failed", "down");
+    }
+  }
+
+  function connect() {
+    const src = new EventSource("api/events");
+    src.onopen = () => setState("live", "live");
+    src.onmessage = (m) => {
+      let ev; try { ev = JSON.parse(m.data); } catch { return; }
+      if (ev.class === "sweep") {
+        // Heartbeat, not a wire: no workload to draw to, nothing to log.
+        sweepAt = Date.now();
+        sweepPulse = performance.now();
+        return;
+      }
+      addWire(ev);
+      logEvent(ev);
+    };
+    src.onerror = () => setState("reconnecting", "down");
+  }
+
+  // Exposes where the nodes really are, so a layout check measures the drawing
+  // rather than a copy of its arithmetic. Read-only and side-effect free.
+  window.__podsmedicNodes = () =>
+    [...workloads.values()].filter(visible).map((w) => {
+      const [x, y] = workloadXY(w);
+      return { key: w.key, x, y };
+    });
+
+  resize();
+  loadSnapshot();
+  setInterval(loadSnapshot, 30000);
+  connect();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

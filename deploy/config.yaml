@@ -1,0 +1,144 @@
+# Namespace, settings, and the secret placeholder for podsmedic.
+#
+# Kept apart from deployment.yaml on purpose: rolling out a new image is the
+# common operation, and it must not silently reset every setting you tuned.
+# Apply this once, edit the ConfigMap in place afterwards.
+#
+#   kubectl apply -f deploy/config.yaml
+#   kubectl -n podsmedic create secret generic podsmedic \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-... \
+#     --from-literal=TELEGRAM_BOT_TOKEN=... \
+#     --from-literal=TELEGRAM_CHAT_ID=... \
+#     --dry-run=client -o yaml | kubectl apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: podsmedic
+---
+# Placeholder so envFrom has something to reference on a first apply. Replace
+# it with the command in the header above; do not commit real keys here.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: podsmedic
+  namespace: podsmedic
+type: Opaque
+stringData:
+  ANTHROPIC_API_KEY: "replace-me"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: podsmedic
+  namespace: podsmedic
+data:
+  PODSMEDIC_INTERVAL: "60s"
+  PODSMEDIC_COOLDOWN: "30m"
+  # provider: "anthropic" (default) or "openai"/"deepseek" for an
+  # OpenAI-compatible endpoint. For openai, also set PODSMEDIC_BASE_URL here and
+  # put the key in the secret as PODSMEDIC_API_KEY.
+  PODSMEDIC_PROVIDER: "anthropic"
+  # PODSMEDIC_BASE_URL: "https://api.deepseek.com"
+  PODSMEDIC_MODEL: "claude-opus-4-8"
+  PODSMEDIC_EFFORT: "high"
+  PODSMEDIC_MAX_TOKENS: "8000"
+  # Cost accounting in USD per million tokens (0 = count tokens only, no dollars).
+  PODSMEDIC_LLM_PRICE_INPUT: "0"
+  PODSMEDIC_LLM_PRICE_OUTPUT: "0"
+  PODSMEDIC_LOG_TAIL_LINES: "120"
+  PODSMEDIC_MAX_EVENTS: "25"
+  PODSMEDIC_MIN_RESTARTS: "3"
+  PODSMEDIC_RESTART_WINDOW: "1h"
+  PODSMEDIC_NOT_READY_GRACE: "10m"
+  PODSMEDIC_VOLUME_MOUNT_GRACE: "2m"
+  PODSMEDIC_MAX_ALERTS_PER_CYCLE: "10"
+  PODSMEDIC_CONCURRENCY: "3"
+  PODSMEDIC_LOG_LEVEL: "info"
+
+  # Telegram two-way chat: listen for operator questions as well as pushing
+  # alerts. Off by default — it is an inbound channel that exposes cluster state
+  # and spends tokens. Answer-only: a chat message can never trigger a heal.
+  PODSMEDIC_TELEGRAM_LISTEN: "false"
+  # Chat IDs allowed to ask. Empty falls back to TELEGRAM_CHAT_ID from the
+  # secret. An empty result serves nobody.
+  PODSMEDIC_TELEGRAM_ALLOWED_CHATS: ""
+  PODSMEDIC_CHAT_MAX_PER_MINUTE: "6"
+  # Live cluster view. Off by default; own port, no authentication, meant for
+  # kubectl port-forward only. Enabling it also starts a pod watch. Binding
+  # 0.0.0.0 inside a pod does NOT expose it outside the cluster — the pod has its
+  # own network namespace — so this stays safe without a Service or hostPort.
+  PODSMEDIC_UI_ADDR: ""            # e.g. 0.0.0.0:3456 to enable
+  PODSMEDIC_UI_EVENT_BUFFER: "200"
+  # Observability endpoints (/healthz, /readyz, /metrics). Empty disables them.
+  PODSMEDIC_METRICS_ADDR: ":9090"
+  # Auto-heal. Both must be true to mutate the cluster; AUTOHEAL alone previews
+  # via server-side dry run. Requires deploy/rbac-autoheal.yaml.
+  PODSMEDIC_AUTOHEAL: "false"
+  PODSMEDIC_HEAL_APPLY: "false"
+  PODSMEDIC_HEAL_MIN_CONFIDENCE: "high"
+  # Add ImagePullBackOff to enable patch_image (corrects a typo'd tag).
+  PODSMEDIC_HEAL_KINDS: "OOMKilled"
+  # Requests move the scheduling floor; off by default so only limits are
+  # raised. When true, a proposed request over node allocatable is refused.
+  PODSMEDIC_HEAL_PATCH_REQUESTS: "false"
+  PODSMEDIC_HEAL_MAX_MEMORY: "4Gi"
+  PODSMEDIC_HEAL_MAX_CPU: "4"
+  PODSMEDIC_HEAL_MAX_MULTIPLIER: "4"
+  # patch_probe loosening ceilings (never tightened, never past these).
+  PODSMEDIC_HEAL_MAX_PROBE_DELAY: "600"
+  PODSMEDIC_HEAL_MAX_PROBE_PERIOD: "300"
+  PODSMEDIC_HEAL_MAX_PROBE_TIMEOUT: "60"
+  PODSMEDIC_HEAL_MAX_PROBE_FAILURES: "20"
+  # Cluster-wide brakes. Every other heal limit is per workload, so N distinct
+  # workloads failing at once passes all of them.
+  PODSMEDIC_HEAL_MAX_PER_SWEEP: "3"
+  PODSMEDIC_HEAL_SURGE_RATIO: "0.25"
+  PODSMEDIC_HEAL_SURGE_MIN_WORKLOADS: "8"
+  PODSMEDIC_HEAL_COOLDOWN: "1h"
+  PODSMEDIC_HEAL_DENY_NAMESPACES: "kube-system,kube-public,kube-node-lease"
+  # Skip ArgoCD/Flux/Helm-managed workloads (patch would be reverted on sync).
+  PODSMEDIC_HEAL_ALLOW_GITOPS: "false"
+  # After an applied heal, re-check the workload; if still failing, roll back
+  # to prior values. Active only with HEAL_APPLY=true. Pending heals persist in
+  # the state ConfigMap (needs the Role in rbac-autoheal.yaml).
+  PODSMEDIC_HEAL_VERIFY: "true"
+  PODSMEDIC_HEAL_VERIFY_AFTER: "10m"
+  PODSMEDIC_HEAL_STATE_CONFIGMAP: "podsmedic-heal-state"
+  # Persist open incidents across restarts (no re-alert). Empty name disables.
+  PODSMEDIC_INCIDENT_STATE_CONFIGMAP: "podsmedic-incident-state"
+  # Durable heal audit trail (before/after values). Empty name disables it.
+  PODSMEDIC_AUDIT_CONFIGMAP: "podsmedic-audit"
+  PODSMEDIC_AUDIT_MAX_EVENTS: "500"
+  # Predictive heal: act before the failure — MemoryPressure (raise limit) and
+  # CPUPressure (scale replicas). Add those kinds to PODSMEDIC_HEAL_KINDS to heal,
+  # not just alert. Needs metrics-server.
+  PODSMEDIC_PREDICT: "false"
+  PODSMEDIC_PREDICT_MEMORY_RATIO: "0.90"
+  PODSMEDIC_PREDICT_MIN_CHECKS: "3"
+  # scale_replicas: "auto" derives the replica count from measured CPU
+  # utilisation and free cluster capacity. A number is still derived but capped
+  # at that backstop; "0" disables scaling entirely.
+  PODSMEDIC_HEAL_MAX_REPLICAS: "auto"
+  PODSMEDIC_HEAL_SCALE_TARGET_CPU: "0.70"
+  # Fraction of every node's allocatable held back from any heal, so podsmedic
+  # never fills the cluster to the brim.
+  PODSMEDIC_HEAL_CAPACITY_RESERVE: "0.20"
+  # Storage recovery. create_pvc is the only thing podsmedic ever creates; it
+  # needs the extra RBAC rule in rbac-autoheal.yaml and an explicit
+  # PODSMEDIC_HEAL_NAMESPACES. Neither storage action can edit or delete a volume.
+  PODSMEDIC_PVC_AUTOCREATE: "false"
+  PODSMEDIC_PVC_DEFAULT_SIZE: "1Gi"
+  PODSMEDIC_PVC_DEFAULT_CLASS: ""
+  PODSMEDIC_PVC_MAX_SIZE: "10Gi"
+  # Playbook: replay verified heals without an LLM diagnosis. Empty name disables.
+  PODSMEDIC_PLAYBOOK_CONFIGMAP: "podsmedic-playbook"
+  PODSMEDIC_PLAYBOOK_MAX_ENTRIES: "500"
+  # Circuit breaker: suspend healing a workload whose heals keep failing.
+  PODSMEDIC_HEAL_BREAKER: "true"
+  PODSMEDIC_HEAL_BREAKER_WINDOW: "6h"
+  PODSMEDIC_HEAL_BREAKER_MAX_HEALS: "4"
+  PODSMEDIC_HEAL_BREAKER_MAX_ROLLBACKS: "2"
+  PODSMEDIC_HEAL_BREAKER_OPEN_FOR: "6h"
+  # Comma-separated. Leave empty to watch every namespace.
+  PODSMEDIC_NAMESPACES: ""
+---

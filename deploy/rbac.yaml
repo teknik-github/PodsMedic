@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: podsmedic
+  namespace: podsmedic
+---
+# Read-only across the cluster. podsmedic never mutates cluster state — it only
+# reads evidence and reports. Do not add write verbs here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: podsmedic
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Node capacity explains Unschedulable and evicted pods, and — together with
+  # the cluster-wide pod list above — is what bounds a scale-up to headroom that
+  # actually exists. Drop this rule and evidence collection still degrades
+  # gracefully, but scale_replicas will refuse rather than guess.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  # HorizontalPodAutoscalers, so a scale heal can refuse a workload something
+  # else already scales. Without this rule podsmedic cannot see the conflict and
+  # will scale anyway — noisy rather than dangerous, but worth granting.
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+  # Volume claims, for the storage problems (PVCPending, VolumeMountFailed). A
+  # claim's own events are where the reason an unbound volume will not bind
+  # actually lives; the PV read explains node affinity on an already-bound one.
+  # Read-only, and only ever read: podsmedic never mutates storage.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims", "persistentvolumes"]
+    verbs: ["get"]
+  # Live pod usage from metrics-server, so the LLM sizes limits from real
+  # numbers instead of guessing. Optional — absent metrics degrade gracefully.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: podsmedic
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: podsmedic
+subjects:
+  - kind: ServiceAccount
+    name: podsmedic
+    namespace: podsmedic
