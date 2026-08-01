@@ -19,6 +19,7 @@ import (
 
 	"github.com/peceldev/podsmedic/internal/playbook"
 	"github.com/peceldev/podsmedic/internal/report"
+	"github.com/peceldev/podsmedic/internal/rightsize"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -49,6 +50,10 @@ func (a *Agent) Answer(ctx context.Context, q chat.Question) (chat.Reply, error)
 		return chat.Say(a.playbookText()), nil
 	case chat.CmdExport:
 		return a.exportPlaybook(ctx, q.Text), nil
+	case chat.CmdRightsize:
+		return a.rightsizeReply(q.Text), nil
+	case chat.CmdNodes:
+		return chat.Say(a.nodesText()), nil
 	}
 	text, err := a.askModel(ctx, q.Text)
 	if err != nil {
@@ -88,6 +93,79 @@ func (a *Agent) exportPlaybook(ctx context.Context, arg string) chat.Reply {
 		Text:     caption,
 		Document: &chat.Document{Filename: doc.Filename, MIMEType: doc.MIMEType, Content: doc.Content},
 	}
+}
+
+// rightsizeReply answers /rightsize. A bare command summarises in chat; adding
+// "md" or "html" produces the full document, because a table of thirty
+// containers is unreadable in a chat bubble.
+func (a *Agent) rightsizeReply(arg string) chat.Reply {
+	if a.rightsize == nil {
+		return chat.Say("Rightsizing is off. Set PODSMEDIC_RIGHTSIZE=true to have me watch what containers actually use against what they reserve.")
+	}
+	findings := a.rightsize.Findings(a.rightsizeOptions(), time.Now())
+	metrics.RightsizeFindings.Set(float64(len(findings)))
+
+	if strings.TrimSpace(arg) == "" {
+		return chat.Say(a.rightsizeSummary(findings))
+	}
+	doc := report.RenderRightsize(report.RightsizeInput{
+		Findings:    findings,
+		GeneratedAt: time.Now(),
+		Scope:       strings.Join(a.cfg.Namespaces, ", "),
+		Tracked:     a.rightsize.Tracking(),
+		MinWindow:   a.cfg.RightsizeMinWindow,
+		MinSamples:  a.cfg.RightsizeMinSamples,
+	}, report.ParseFormat(arg))
+
+	caption := fmt.Sprintf("podsmedic rightsizing — %d suggestion(s) across %d container(s) under observation. These are suggestions; I never apply them.",
+		len(findings), a.rightsize.Tracking())
+	return chat.Reply{
+		Text:     caption,
+		Document: &chat.Document{Filename: doc.Filename, MIMEType: doc.MIMEType, Content: doc.Content},
+	}
+}
+
+// rightsizeCountShown bounds the chat summary. The document is there for the
+// rest.
+const rightsizeCountShown = 8
+
+func (a *Agent) rightsizeSummary(findings []rightsize.Finding) string {
+	tracked := a.rightsize.Tracking()
+	if len(findings) == 0 {
+		return fmt.Sprintf("No sizing suggestions yet.\n\nI am watching %d container(s). A container is only judged after %d samples over at least %s — every workload has a quiet ten minutes, and sizing one from that would be worse than saying nothing.",
+			tracked, a.cfg.RightsizeMinSamples, a.cfg.RightsizeMinWindow)
+	}
+
+	var b strings.Builder
+	cpu, mem := rightsize.Totals(findings)
+	fmt.Fprintf(&b, "%d sizing suggestion(s) across %d container(s) watched.\n", len(findings), tracked)
+	if cpu > 0 || mem > 0 {
+		fmt.Fprintf(&b, "Applying every reduction would return %s CPU and %s memory to the cluster.\n",
+			rightsize.FormatCPU(cpu), rightsize.FormatMem(mem))
+	}
+	b.WriteString("\n")
+
+	shown := findings
+	if len(shown) > rightsizeCountShown {
+		shown = shown[:rightsizeCountShown]
+	}
+	for _, f := range shown {
+		fmt.Fprintf(&b, "• %s/%s (%s) %s: %s → %s  [%s]\n",
+			f.Namespace, f.Workload, f.Container, f.Resource,
+			amountOf(f.Resource, f.Current), amountOf(f.Resource, f.Recommended), f.Kind)
+	}
+	if len(findings) > len(shown) {
+		fmt.Fprintf(&b, "…and %d more.\n", len(findings)-len(shown))
+	}
+	b.WriteString("\nThese are suggestions — I never apply them. Automated healing only ever raises a value; lowering a request changes where a pod schedules and how early it is evicted, so that call is yours. Use /rightsize html for the full document.")
+	return b.String()
+}
+
+func amountOf(r rightsize.Resource, v int64) string {
+	if r == rightsize.CPU {
+		return rightsize.FormatCPU(v)
+	}
+	return rightsize.FormatMem(v)
 }
 
 // --- Locally answered commands (no LLM call) -----------------------------

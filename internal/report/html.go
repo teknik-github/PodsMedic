@@ -43,17 +43,26 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 }
 `
 
+// htmlHead opens a self-contained document. Self-contained is a requirement,
+// not a preference: these are mailed around and opened offline, and a report
+// that fetched a stylesheet would render as unstyled text exactly when someone
+// needed to read it.
+func htmlHead(title string) string {
+	var b strings.Builder
+	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
+	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
+	fmt.Fprintf(&b, "<title>%s</title>\n<style>", html.EscapeString(title))
+	b.WriteString(printCSS)
+	b.WriteString("</style>\n</head>\n<body>\n")
+	return b.String()
+}
+
 func renderHTML(in Input) string {
 	var b strings.Builder
 	remedies, replays := totals(in.Entries)
 	esc := html.EscapeString
 
-	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
-	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
-	b.WriteString("<title>podsmedic playbook</title>\n<style>")
-	b.WriteString(printCSS)
-	b.WriteString("</style>\n</head>\n<body>\n")
-
+	b.WriteString(htmlHead("podsmedic playbook"))
 	b.WriteString("<h1>podsmedic playbook</h1>\n")
 	fmt.Fprintf(&b, "<p class=\"sub\">Generated %s · watching %s</p>\n",
 		esc(in.GeneratedAt.UTC().Format("2006-01-02 15:04 UTC")), esc(orAll(in.Scope)))

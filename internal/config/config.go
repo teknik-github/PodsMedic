@@ -14,6 +14,7 @@ import (
 	"github.com/peceldev/podsmedic/internal/detect"
 	"github.com/peceldev/podsmedic/internal/heal"
 	"github.com/peceldev/podsmedic/internal/playbook"
+	"github.com/peceldev/podsmedic/internal/rightsize"
 )
 
 // Config holds every knob podsmedic needs at runtime.
@@ -136,6 +137,25 @@ type Config struct {
 	HealBreakerMaxRollbacks int           // rollbacks in window that trip the breaker (0 = off)
 	HealBreakerOpenFor      time.Duration // how long healing stays suspended after a trip
 
+	// Rightsizing. Report-only by construction: heal.Validate only ever raises a
+	// value, and lowering a request moves a workload's scheduling floor and
+	// eviction priority. The suggestion goes to a human.
+	Rightsize           bool
+	RightsizeName       string // ConfigMap holding the usage history; empty disables persistence
+	RightsizeMaxTracked int
+	RightsizeMinSamples int
+	RightsizeMinWindow  time.Duration
+	RightsizeOverRatio  float64 // peak below this fraction of the request is oversized
+	RightsizeHeadroom   float64 // multiplier on the observed peak for the suggestion
+
+	// Node health. Report-only, and separate from everything else because every
+	// other signal starts from a pod: a node says it is in trouble before its
+	// pods fall over. podsmedic never writes to a node, so this ends at an alert.
+	NodeHealth         bool
+	NodeGrace          time.Duration // how long a condition must hold before reporting
+	NodeCooldown       time.Duration // silence between repeats of the same fault
+	NodeReportCordoned bool          // include deliberately cordoned nodes
+
 	// Behaviour
 	DryRun bool
 	// MetricsAddr is the listen address for /healthz, /readyz, /metrics. Empty
@@ -160,29 +180,41 @@ type Config struct {
 // Load reads configuration from the environment, applying defaults.
 func Load() (*Config, error) {
 	c := &Config{
-		Kubeconfig:         os.Getenv("KUBECONFIG"),
-		MaxAlertsPerCycle:  envInt("PODSMEDIC_MAX_ALERTS_PER_CYCLE", 10),
-		Concurrency:        envInt("PODSMEDIC_CONCURRENCY", 3),
-		Interval:           envDuration("PODSMEDIC_INTERVAL", 60*time.Second),
-		Cooldown:           envDuration("PODSMEDIC_COOLDOWN", 30*time.Minute),
-		LogTailLines:       int64(envInt("PODSMEDIC_LOG_TAIL_LINES", 120)),
-		MaxEvents:          envInt("PODSMEDIC_MAX_EVENTS", 25),
-		MinRestarts:        int32(envInt("PODSMEDIC_MIN_RESTARTS", 3)),
-		RestartWindow:      envDuration("PODSMEDIC_RESTART_WINDOW", time.Hour),
-		NotReadyGrace:      envDuration("PODSMEDIC_NOT_READY_GRACE", 10*time.Minute),
-		VolumeMountGrace:   envDuration("PODSMEDIC_VOLUME_MOUNT_GRACE", 2*time.Minute),
-		Provider:           strings.ToLower(envString("PODSMEDIC_PROVIDER", "anthropic")),
-		BaseURL:            os.Getenv("PODSMEDIC_BASE_URL"),
-		MaxTokens:          int64(envInt("PODSMEDIC_MAX_TOKENS", 8000)),
-		Effort:             envString("PODSMEDIC_EFFORT", "high"),
-		PriceInputPerMTok:  envFloat("PODSMEDIC_LLM_PRICE_INPUT", 0),
-		PriceOutputPerMTok: envFloat("PODSMEDIC_LLM_PRICE_OUTPUT", 0),
-		SlackWebhookURL:    os.Getenv("SLACK_WEBHOOK_URL"),
-		TelegramBotToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramChatID:     os.Getenv("TELEGRAM_CHAT_ID"),
-		TelegramListen:     envBool("PODSMEDIC_TELEGRAM_LISTEN", false),
-		ChatMaxPerMinute:   envInt("PODSMEDIC_CHAT_MAX_PER_MINUTE", 6),
-		DryRun:             envBool("PODSMEDIC_DRY_RUN", false),
+		Kubeconfig:          os.Getenv("KUBECONFIG"),
+		MaxAlertsPerCycle:   envInt("PODSMEDIC_MAX_ALERTS_PER_CYCLE", 10),
+		Concurrency:         envInt("PODSMEDIC_CONCURRENCY", 3),
+		Interval:            envDuration("PODSMEDIC_INTERVAL", 60*time.Second),
+		Cooldown:            envDuration("PODSMEDIC_COOLDOWN", 30*time.Minute),
+		LogTailLines:        int64(envInt("PODSMEDIC_LOG_TAIL_LINES", 120)),
+		MaxEvents:           envInt("PODSMEDIC_MAX_EVENTS", 25),
+		MinRestarts:         int32(envInt("PODSMEDIC_MIN_RESTARTS", 3)),
+		RestartWindow:       envDuration("PODSMEDIC_RESTART_WINDOW", time.Hour),
+		NotReadyGrace:       envDuration("PODSMEDIC_NOT_READY_GRACE", 10*time.Minute),
+		VolumeMountGrace:    envDuration("PODSMEDIC_VOLUME_MOUNT_GRACE", 2*time.Minute),
+		Provider:            strings.ToLower(envString("PODSMEDIC_PROVIDER", "anthropic")),
+		BaseURL:             os.Getenv("PODSMEDIC_BASE_URL"),
+		MaxTokens:           int64(envInt("PODSMEDIC_MAX_TOKENS", 8000)),
+		Effort:              envString("PODSMEDIC_EFFORT", "high"),
+		PriceInputPerMTok:   envFloat("PODSMEDIC_LLM_PRICE_INPUT", 0),
+		PriceOutputPerMTok:  envFloat("PODSMEDIC_LLM_PRICE_OUTPUT", 0),
+		SlackWebhookURL:     os.Getenv("SLACK_WEBHOOK_URL"),
+		TelegramBotToken:    os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramChatID:      os.Getenv("TELEGRAM_CHAT_ID"),
+		TelegramListen:      envBool("PODSMEDIC_TELEGRAM_LISTEN", false),
+		ChatMaxPerMinute:    envInt("PODSMEDIC_CHAT_MAX_PER_MINUTE", 6),
+		DryRun:              envBool("PODSMEDIC_DRY_RUN", false),
+		Rightsize:           envBool("PODSMEDIC_RIGHTSIZE", true),
+		RightsizeName:       envStringAllowEmpty("PODSMEDIC_RIGHTSIZE_CONFIGMAP", "podsmedic-rightsize"),
+		RightsizeMaxTracked: envInt("PODSMEDIC_RIGHTSIZE_MAX_TRACKED", rightsize.DefaultMaxTracked),
+		RightsizeMinSamples: envInt("PODSMEDIC_RIGHTSIZE_MIN_SAMPLES", 60),
+		RightsizeMinWindow:  envDuration("PODSMEDIC_RIGHTSIZE_MIN_WINDOW", 24*time.Hour),
+		RightsizeOverRatio:  envFloat("PODSMEDIC_RIGHTSIZE_OVER_RATIO", 0.40),
+		RightsizeHeadroom:   envFloat("PODSMEDIC_RIGHTSIZE_HEADROOM", 1.5),
+
+		NodeHealth:         envBool("PODSMEDIC_NODE_HEALTH", true),
+		NodeGrace:          envDuration("PODSMEDIC_NODE_GRACE", 3*time.Minute),
+		NodeCooldown:       envDuration("PODSMEDIC_NODE_COOLDOWN", 2*time.Hour),
+		NodeReportCordoned: envBool("PODSMEDIC_NODE_REPORT_CORDONED", false),
 		MetricsAddr:        envStringAllowEmpty("PODSMEDIC_METRICS_ADDR", ":9090"),
 		UIAddr:             envStringAllowEmpty("PODSMEDIC_UI_ADDR", ""),
 		UIEventBuffer:      envInt("PODSMEDIC_UI_EVENT_BUFFER", 200),

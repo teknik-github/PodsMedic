@@ -35,6 +35,12 @@ const (
 	CmdHeals     Command = "heals"
 	CmdPlaybook  Command = "playbook"
 	CmdExport    Command = "export"
+	// CmdRightsize reports containers whose declared requests do not match what
+	// they actually use. Suggestions only — nothing here ever changes a
+	// workload, which is why it is safe on the read-only chat path.
+	CmdRightsize Command = "rightsize"
+	// CmdNodes reports the health of the machines under the workloads.
+	CmdNodes Command = "nodes"
 )
 
 // Question is one inbound message, already parsed and authorised.
@@ -110,6 +116,10 @@ func Parse(text string) (Command, string) {
 		return CmdPlaybook, rest
 	case "export", "report", "pdf":
 		return CmdExport, rest
+	case "rightsize", "rightsizing", "sizing":
+		return CmdRightsize, rest
+	case "nodes", "node":
+		return CmdNodes, rest
 	case "ask":
 		return CmdAsk, rest
 	default:
@@ -197,6 +207,8 @@ Commands (answered from local state, no LLM cost):
 /capacity   cluster headroom, as the heal validator sees it
 /heals      recent automated changes, newest first
 /playbook   verified remedies I can replay without asking the model
+/nodes      health of the machines under your workloads
+/rightsize  containers whose requests do not match what they use (add "html" for a document)
 /export     the playbook as a document to study (add "html" for a printable one)
 /help       this message
 

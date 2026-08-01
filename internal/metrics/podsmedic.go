@@ -57,6 +57,18 @@ var (
 	ClusterPodSlotsFree     = Default.NewGauge("podsmedic_cluster_pod_slots_free", "Pod slots left on schedulable nodes after the heal reserve.")
 	ClusterNodesSchedulable = Default.NewGauge("podsmedic_cluster_nodes_schedulable", "Nodes a new pod could actually be placed on.")
 
+	// Rightsizing. Report-only, so there is nothing to count as applied — this
+	// measures how much of the cluster has enough history to be judged.
+	RightsizeTracked  = Default.NewGauge("podsmedic_rightsize_tracked", "Containers with a usage history under observation.")
+	RightsizeFindings = Default.NewGauge("podsmedic_rightsize_findings", "Sizing suggestions the most recent report would make.")
+
+	// Node health. Report-only: podsmedic never writes to a node, so these
+	// measure what a human was told, not what was fixed. NodeFaultsTotal is
+	// labelled kind.
+	NodesWatched    = Default.NewGauge("podsmedic_nodes_watched", "Nodes examined in the most recent sweep.")
+	NodeFaults      = Default.NewGauge("podsmedic_node_faults", "Node-level faults currently reported.")
+	NodeFaultsTotal = Default.NewCounter("podsmedic_node_faults_total", "Node-level faults alerted on, by kind.", "kind")
+
 	// Cluster-wide heal brakes.
 	SurgeTrips = Default.NewCounter("podsmedic_heal_surge_trips_total", "Times healing was suspended cluster-wide because the failure pattern looked systemic.")
 

@@ -24,9 +24,11 @@ import (
 	"github.com/peceldev/podsmedic/internal/live"
 	"github.com/peceldev/podsmedic/internal/llm"
 	"github.com/peceldev/podsmedic/internal/metrics"
+	"github.com/peceldev/podsmedic/internal/nodes"
 	"github.com/peceldev/podsmedic/internal/notify"
 	"github.com/peceldev/podsmedic/internal/playbook"
 	"github.com/peceldev/podsmedic/internal/predict"
+	"github.com/peceldev/podsmedic/internal/rightsize"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -45,6 +47,10 @@ type Agent struct {
 	// runs concurrently with the sweep loop.
 	sweepMu   sync.RWMutex
 	lastSweep *sweepSnapshot
+	// lastNodes and lastNodeFaults answer /nodes. Guarded by the same lock and
+	// for the same reason: they cross sweeps.
+	lastNodes      []nodes.State
+	lastNodeFaults []nodes.Finding
 
 	// Auto-heal collaborators. healer is nil when auto-heal is disabled.
 	healer   *heal.Executor
@@ -58,6 +64,16 @@ type Agent struct {
 
 	// audit is the durable heal trail. Never nil: NopLog when disabled.
 	audit audit.Log
+
+	// rightsize accumulates usage against declared requests. Report-only: see
+	// internal/rightsize on why there is no heal for it.
+	rightsize   *rightsize.Tracker
+	rightsizeCM string
+
+	// nodeSeen silences a node fault that is already known. A node stays
+	// NotReady for as long as it stays NotReady, so without this it would be the
+	// same alert every sweep.
+	nodeSeen *dedupe.Cache
 
 	// breaker suspends healing a workload that keeps failing its heals. Nil when
 	// disabled.
@@ -151,6 +167,13 @@ func New(cfg *config.Config, kube *k8s.Client, brain llm.Client, notifier notify
 		audit:     audit.NopLog{},
 
 		incidentStateCM: cfg.IncidentStateName,
+		nodeSeen:        dedupe.New(cfg.NodeCooldown),
+	}
+	// Independent of auto-heal: knowing a workload is three times oversized is
+	// useful whether or not podsmedic is allowed to change anything.
+	if cfg.Rightsize {
+		a.rightsize = rightsize.New(cfg.RightsizeMaxTracked)
+		a.rightsizeCM = cfg.RightsizeName
 	}
 	if cfg.AutoHeal {
 		// The trail records dry runs as well as real applies, so it is wired
@@ -211,6 +234,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// them instead of re-alerting, and the learned-heal playbook.
 	a.loadIncidents(ctx)
 	a.loadPlaybook(ctx)
+	a.loadRightsize(ctx)
 
 	a.sweep(ctx)
 	for {
@@ -391,6 +415,15 @@ func (a *Agent) sweep(ctx context.Context) {
 		"openIncidents", a.incidents.OpenCount(),
 		"took", time.Since(start).Round(time.Millisecond))
 
+	// Fold this sweep's usage into the sizing history. Cheap: it reuses the
+	// samples prediction already gathered.
+	a.observeUsage(st)
+
+	// The machines under the workloads. Report-only, and checked every sweep
+	// whether or not any pod is failing — the point is to hear it from the node
+	// before the pods start falling over.
+	a.checkNodes(ctx, pods)
+
 	// Verify earlier heals against the same live problem set, whether or not
 	// there is anything new this cycle.
 	a.verifyHeals(ctx, problems)
@@ -414,6 +447,7 @@ func (a *Agent) sweep(ctx context.Context) {
 	// re-alert open incidents or lose a pending retry. Only writes when changed.
 	a.persistIncidents(ctx)
 	a.persistPlaybook(ctx)
+	a.persistRightsize(ctx)
 
 	if len(fresh) == 0 {
 		return
