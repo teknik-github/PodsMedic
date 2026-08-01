@@ -718,6 +718,7 @@ Six commands are answered from local state with **no LLM call at all**:
 | Command | Answers |
 | --- | --- |
 | `/status` | What the last sweep found, and whether healing is off / dry-run / applying |
+| `/pods` | Pods and their state. Bare, it summarises and lists only what needs attention; add a namespace or name to list those in full, or `all` for everything |
 | `/incidents` | Currently open incidents, oldest first |
 | `/capacity` | Cluster headroom exactly as the heal validator sees it, reserve included |
 | `/heals` | The last 10 audit entries — what changed, and whether it held |

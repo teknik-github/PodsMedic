@@ -18,6 +18,7 @@ import (
 	"github.com/teknik-github/PodsMedic/internal/metrics"
 
 	"github.com/teknik-github/PodsMedic/internal/playbook"
+	"github.com/teknik-github/PodsMedic/internal/podlist"
 	"github.com/teknik-github/PodsMedic/internal/report"
 	"github.com/teknik-github/PodsMedic/internal/rightsize"
 	corev1 "k8s.io/api/core/v1"
@@ -56,6 +57,8 @@ func (a *Agent) Answer(ctx context.Context, q chat.Question) (chat.Reply, error)
 		return chat.Say(a.nodesText()), nil
 	case chat.CmdDigest:
 		return chat.Say(a.digestPreview()), nil
+	case chat.CmdPods:
+		return chat.Say(a.podsText(q.Text)), nil
 	}
 	text, err := a.askModel(ctx, q.Text)
 	if err != nil {
@@ -171,6 +174,19 @@ func amountOf(r rightsize.Resource, v int64) string {
 }
 
 // --- Locally answered commands (no LLM call) -----------------------------
+
+// podsText answers /pods from the last sweep's own pod list, so it costs no API
+// call and no tokens — and it shows exactly what podsmedic is reasoning from,
+// which is more useful than a fresh read that might disagree with the diagnosis
+// sitting above it in the chat.
+func (a *Agent) podsText(filter string) string {
+	snap := a.latestSweep()
+	if snap == nil || snap.state == nil {
+		return "No sweep has completed yet. Ask again in a moment."
+	}
+	l := podlist.Summarize(snap.state.pods, podlist.Options{Filter: filter}, time.Now())
+	return l.Text() + fmt.Sprintf("\n\nAs of the sweep %s ago.", roundAge(time.Since(snap.at)))
+}
 
 func (a *Agent) statusText() string {
 	snap := a.latestSweep()

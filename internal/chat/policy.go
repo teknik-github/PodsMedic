@@ -43,6 +43,8 @@ const (
 	CmdNodes Command = "nodes"
 	// CmdDigest previews the daily summary without disturbing its schedule.
 	CmdDigest Command = "digest"
+	// CmdPods lists pods and their states, optionally filtered.
+	CmdPods Command = "pods"
 )
 
 // Question is one inbound message, already parsed and authorised.
@@ -124,6 +126,8 @@ func Parse(text string) (Command, string) {
 		return CmdNodes, rest
 	case "digest", "summary", "daily":
 		return CmdDigest, rest
+	case "pods", "pod", "ps":
+		return CmdPods, rest
 	case "ask":
 		return CmdAsk, rest
 	default:
@@ -207,6 +211,7 @@ const HelpText = `podsmedic — ask me about this cluster.
 
 Commands (answered from local state, no LLM cost):
 /status     what the last sweep found
+/pods       pods and their state; add a namespace or name to filter, "all" for everything
 /incidents  currently open incidents
 /capacity   cluster headroom, as the heal validator sees it
 /heals      recent automated changes, newest first

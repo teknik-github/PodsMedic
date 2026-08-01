@@ -272,7 +272,8 @@ breaks — per-pod content belongs in the user turn.
 - New LLM provider: implement `llm.Client` (`Diagnose` + `Answer`), wire into `llm.New`.
 - New chat command: a `Command` and `Parse` case in `internal/chat/policy.go` plus a test, a line
   in `chat.HelpText`, then a branch in `agent.Answer` (`internal/agent/ask.go`). Answer from state
-  the agent already holds so it costs no tokens, and put any non-trivial formatting in the package
+  the agent already holds so it costs no tokens — `/pods` reads `lastSweep.state.pods` rather than
+  re-listing, so the reply can never disagree with the diagnosis above it in the chat, and put any non-trivial formatting in the package
   that owns the data (e.g. `heal.Action.Describe`) so it gets a test. A command that returns a file
   sets `chat.Reply.Document`; the bot uploads it via multipart `sendDocument`.
 - New node check: a case in `nodes.checkNode` plus a `nodes_test.go` case. It must stay

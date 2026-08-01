@@ -37,6 +37,9 @@ func TestParseCommands(t *testing.T) {
 		{"/nodes", CmdNodes, ""},
 		{"/node", CmdNodes, ""},
 		{"/digest", CmdDigest, ""},
+		{"/pods", CmdPods, ""},
+		{"/pods longhorn-system", CmdPods, "longhorn-system"},
+		{"/ps all", CmdPods, "all"},
 		{"/summary", CmdDigest, ""},
 		{"/ask why is web crashing?", CmdAsk, "why is web crashing?"},
 		// Free text is a question.
