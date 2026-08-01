@@ -100,6 +100,50 @@ func TestCanvasHasExplicitSize(t *testing.T) {
 	}
 }
 
+func TestWorkloadsOrbitAndStopOnlyWhenTheyFail(t *testing.T) {
+	// The page's primary signal is motion: every workload orbits, and one that
+	// has a problem stops dead while its shell-mates carry on past it. A single
+	// motionless dot among two dozen moving ones is caught by peripheral vision,
+	// which colour alone never is.
+	//
+	// Verified in a real browser on a live cluster — within the oom-test shell,
+	// healthy-demo and probe-demo kept moving while img-demo, oom-demo and
+	// wire-demo held still. This guards the pieces that make that work.
+	s, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+
+	for _, needed := range []string{
+		"function advance(",                    // the per-frame step
+		"function stalled(",                    // the one predicate that decides who stops
+		"if (!w.shell || stalled(w)) continue", // stopping is per workload, not per shell
+	} {
+		if !strings.Contains(body, needed) {
+			t.Fatalf("the orbit mechanic is missing %q", needed)
+		}
+	}
+
+	// Angle must survive a snapshot poll. Without this every orbit snaps back to
+	// its starting slot once a minute, which reads as the whole cluster
+	// twitching and buries the one signal the view exists for.
+	if !strings.Contains(body, "angle: prev ? prev.angle : undefined") {
+		t.Fatal("orbit angle is not carried across snapshots; every poll would reset the motion")
+	}
+
+	// Motion is the signal, so the OS setting that disables motion has to be
+	// honoured rather than ignored.
+	if !strings.Contains(body, "prefers-reduced-motion") {
+		t.Fatal("expected reduced-motion to be respected")
+	}
+
+	// A stopped workload must not also pulse: something throbbing reads as
+	// alive, which is the opposite of what a halt means.
+	if !strings.Contains(body, "if (!stopped && !STILL)") {
+		t.Fatal("expected the wake to be dropped for a stopped workload")
+	}
+}
+
 func TestUnknownPathIs404(t *testing.T) {
 	s, _ := newTestServer(t)
 	rec := httptest.NewRecorder()

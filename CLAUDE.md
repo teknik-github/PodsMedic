@@ -168,6 +168,17 @@ address with no token rather than warning — a page listing every workload must
 LAN because a log line went unread. There is still no TLS, so port-forward remains the
 intended route on an untrusted network.
 
+**Motion is the primary signal, not decoration.** Each namespace is an orbital shell and
+every workload rides it; a workload with an open problem **stops dead** while its
+shell-mates keep going past it. A motionless dot among two dozen moving ones is caught by
+peripheral vision, which colour alone never is — so the stop is reserved for real failures
+(degraded-but-serving keeps moving) and a stopped node loses its wake and gains static
+rings rather than a pulse, because something throbbing reads as alive. Two consequences
+are easy to break: `w.angle` must survive a snapshot poll (the API does not send one, so
+it is carried forward explicitly, or every orbit snaps back once a minute), and
+`prefers-reduced-motion` must hold the orbits still, which is why colour and the halo
+duplicate the signal.
+
 Load-bearing details: `Stream.Publish` must never block (it is called from the sweep
 *and* an informer callback — a browser on a sleeping laptop cannot be allowed to
 stall either), a nil `*Stream` is a valid no-op so call sites stay unconditional,

@@ -46,6 +46,13 @@
   #legend { bottom:14px; left:18px; display:flex; flex-direction:column; gap:5px; }
   #legend div { color:var(--dim); display:flex; align-items:center; gap:8px; }
   #legend i { width:16px; height:2px; display:inline-block; border-radius:2px; }
+  /* The two orbit states are shapes, not colours: a dot with a wake against a
+     dot with a stop-ring. Anyone who cannot separate the red from the slate
+     still gets the distinction. */
+  #legend i.orbiting { height:6px; border-radius:3px;
+    background:linear-gradient(to right, rgba(77,100,128,0) 0%, #4d6480 100%); }
+  #legend i.halted { height:6px; width:6px; border-radius:50%;
+    background:var(--problem); box-shadow:0 0 0 2px rgba(255,77,94,0.35); margin:0 5px; }
   #legend .grouphead { color:var(--ink); margin-top:6px; letter-spacing:.1em;
                        font-size:11px; text-transform:uppercase; }
 
@@ -107,6 +114,9 @@
   <div><i style="background:var(--heal)"></i>healed</div>
   <div><i style="background:var(--rollback)"></i>rolled back</div>
   <div><i style="background:var(--declined)"></i>declined</div>
+  <div class="grouphead">orbit</div>
+  <div><i class="orbiting"></i>orbiting — healthy</div>
+  <div><i class="halted"></i>stopped — has a problem</div>
 </div>
 
 <div class="panel" id="detail"><span class="close" id="d-close">×</span>
@@ -168,23 +178,52 @@
   let sweepAt = 0, sweepIntervalMs = 60000, sweepPulse = 0;
   const MAX_WIRES = 60;
 
-  // Ellipse factors. Narrower than the first attempt: the horizontal stretch is
-  // what pushed nodes under the bottom-right feed panel.
-  const RING_X = 1.18, RING_Y = 0.82;
-  function ringRadius() { return Math.min(W, H) * 0.38; }
+  // Motion is the primary signal on this page, so respecting the OS setting is
+  // not decoration. With reduced motion the orbits hold still and colour carries
+  // the state on its own — which is also why colour is never the *only* cue for
+  // a stopped workload: it gets a halo and a dropped trail too.
+  const STILL = window.matchMedia &&
+                window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function ringRadius() { return Math.min(W, H) * 0.36; }
   function globeRadius() { return Math.min(W, H) * 0.24; }
 
   function visible(w) { return !focusNS || w.namespace === focusNS; }
 
-  // Lays workloads out in one arc per namespace, spaced evenly within each.
+  // A workload stops orbiting when it has an open problem.
   //
-  // Two earlier versions were worse. Hashing the name to an angle was stable but
-  // collided — on a real 24-workload cluster two landed 0.0 degrees apart. Plain
-  // alphabetical spacing fixed the collisions but interleaved namespaces, and on
-  // that same cluster 68% of the ring was longhorn-system and kube-system, so
-  // the handful of workloads anyone cared about sat scattered among
-  // infrastructure. Grouping turns the ring from a list into a map.
-  const GAP = 0.055; // radians of empty space between namespace bands
+  // This is the one thing on the page you can read without looking at it. Colour
+  // needs foveal attention and a legend; a single motionless dot among two dozen
+  // moving ones is caught by peripheral vision, which is what you actually have
+  // spare while doing something else. Degraded-but-not-failing keeps moving —
+  // reserving the stop for real failures is what keeps it meaning something.
+  function stalled(w) { return (w.problems || 0) > 0; }
+
+  // Each namespace is an orbital shell.
+  //
+  // The grouping itself is load-bearing and predates the motion: hashing names to
+  // angles collided (two workloads 0.0° apart on a real cluster), and plain
+  // alphabetical order interleaved namespaces so that on that same cluster 68% of
+  // the ring was longhorn-system and kube-system, scattering the handful anyone
+  // cared about among infrastructure. One shell per namespace keeps that map and
+  // gains a second axis: shells sit at different radii and inclinations, so they
+  // stay tellable apart while everything is in motion.
+  function shellGeometry(idx, count) {
+    const r = ringRadius();
+    // Spread the radii, but gently — widely separated shells stop reading as one
+    // system and start reading as unrelated rings.
+    const spread = count > 1 ? idx / (count - 1) : 0;
+    const rx = r * (0.86 + spread * 0.52);
+    // Inclination varies too, so two shells of similar radius never trace the
+    // same path. Flatter shells cross the globe; rounder ones ride outside it.
+    const flatten = 0.26 + ((idx * 0.37) % 1) * 0.5;
+    const tilt = (idx * Math.PI) / Math.max(count, 1) + 0.35;
+    // Inner shells run faster, as they would if this were physics, and alternate
+    // direction so crossings keep changing instead of locking into a pattern.
+    const dir = idx % 2 ? -1 : 1;
+    const speed = dir * (0.20 - spread * 0.07);
+    return { rx, ry: rx * flatten, tilt, speed };
+  }
 
   function relayout() {
     const shown = [...workloads.values()].filter(visible);
@@ -194,29 +233,51 @@
       byNS.get(w.namespace).push(w);
     }
     const names = [...byNS.keys()].sort();
-    const total = shown.length || 1;
-    const usable = Math.PI * 2 - GAP * Math.max(names.length, 1);
 
     arcs = [];
-    let a = -Math.PI / 2 + GAP / 2;
     names.forEach((ns, idx) => {
       const list = byNS.get(ns).sort((x, y) => x.key.localeCompare(y.key));
-      const span = usable * (list.length / total);
-      const step = span / list.length;
-      // Half-step inset keeps the first and last node off the band's own edge.
-      list.forEach((w, i) => { w.angle = a + step * (i + 0.5); });
-      arcs.push({ ns, start: a, end: a + span, mid: a + span / 2,
-                  count: list.length, tint: NS_TINTS[idx % NS_TINTS.length] });
-      a += span + GAP;
+      const shell = Object.assign(shellGeometry(idx, names.length), {
+        ns, idx, count: list.length, tint: NS_TINTS[idx % NS_TINTS.length],
+        // Labels alternate sides so that shells whose inclinations are close do
+        // not stack their captions on top of each other.
+        labelTheta: idx % 2 ? Math.PI : 0,
+      });
+      const step = (Math.PI * 2) / list.length;
+      list.forEach((w, i) => {
+        w.shell = shell;
+        // Keep an existing angle across relayouts. A workload appearing or a
+        // namespace focus changing must not teleport everything else: the whole
+        // point of the motion is that a *stopped* dot is the anomaly, and a
+        // general jump would drown that out.
+        if (typeof w.angle !== "number") w.angle = step * i;
+      });
+      arcs.push(shell);
     });
+  }
+
+  // advance steps every orbit that is still running. dt is milliseconds, clamped
+  // by the caller, so a backgrounded tab resumes rather than teleporting.
+  function advance(dt) {
+    if (STILL) return;
+    const s = dt / 1000;
+    for (const w of workloads.values()) {
+      if (!w.shell || stalled(w)) continue;
+      w.angle = (w.angle + w.shell.speed * s) % (Math.PI * 2);
+    }
   }
 
   function setWorkloads(list) {
     const next = new Map();
     for (const w of list || []) {
       const prev = workloads.get(w.key);
+      // angle has to survive the snapshot poll. The API does not send one, so
+      // without carrying it forward every orbit would snap back to its starting
+      // slot once a minute — which reads as the whole cluster twitching, and
+      // buries the one signal this view exists for.
       next.set(w.key, Object.assign({ events: prev ? prev.events : [],
-                                      lit: prev ? prev.lit : 0 }, w));
+                                      lit: prev ? prev.lit : 0,
+                                      angle: prev ? prev.angle : undefined }, w));
     }
     workloads = next;
     relayout();
@@ -233,7 +294,7 @@
     if (!workloads.has(key)) {
       workloads.set(key, {
         key, namespace: ev.namespace, name: ev.workload || ev.pod,
-        pods: 1, ready: 0, problems: 0, angle: 0, events: [], lit: 0,
+        pods: 1, ready: 0, problems: 0, events: [], lit: 0,
       });
       relayout();
       document.getElementById("s-work").textContent = workloads.size;
@@ -264,9 +325,25 @@
   }
 
   // ---- geometry ------------------------------------------------------------
+
+  // A point on a shell: an ellipse, rotated by the shell's inclination.
+  function orbitXY(shell, theta) {
+    const cx = W / 2, cy = H / 2;
+    const ux = Math.cos(theta) * shell.rx, uy = Math.sin(theta) * shell.ry;
+    const c = Math.cos(shell.tilt), s = Math.sin(shell.tilt);
+    return [cx + ux * c - uy * s, cy + ux * s + uy * c];
+  }
+
+  // Depth along the shell, +1 nearest the viewer and −1 furthest. The flattened
+  // axis is the one pointing at the camera, so this is just sin(theta) — and it
+  // is what lets a particle pass in front of the globe on one half of its orbit
+  // and behind it on the other. Without that the whole thing reads as a flat
+  // ring with things sliding around it.
+  function orbitDepth(theta) { return Math.sin(theta); }
+
   function workloadXY(w) {
-    const cx = W / 2, cy = H / 2, r = ringRadius();
-    return [cx + Math.cos(w.angle) * r * RING_X, cy + Math.sin(w.angle) * r * RING_Y];
+    if (!w.shell) return [W / 2, H / 2];
+    return orbitXY(w.shell, w.angle);
   }
 
   // Node radius carries the replica count. Square-rooted and capped, so a
@@ -345,29 +422,54 @@
     }
   }
 
-  function drawArcs() {
-    const cx = W / 2, cy = H / 2, r = ringRadius();
-    for (const arc of arcs) {
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.scale(RING_X, RING_Y);
-      ctx.strokeStyle = arc.tint + "44";
-      ctx.lineWidth = 1.5 / Math.max(RING_X, RING_Y);
-      ctx.beginPath(); ctx.arc(0, 0, r * 1.10, arc.start, arc.end); ctx.stroke();
-      ctx.restore();
+  // The orbit paths, drawn very faint. They exist to make the motion legible as
+  // orbits rather than as drift, and to group a namespace visually — so they
+  // must stay quieter than the particles riding them, or the page becomes a
+  // diagram of ellipses with some dots in it.
+  function drawShells() {
+    const cx = W / 2, cy = H / 2;
+    for (const shell of arcs) {
+      const focused = shell.ns === focusNS;
+      ctx.strokeStyle = shell.tint + (focused ? "66" : "30");
+      ctx.lineWidth = focused ? 1.3 : 1;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, shell.rx, shell.ry, shell.tilt, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
 
-      const lx = cx + Math.cos(arc.mid) * r * RING_X * 1.19;
-      const ly = cy + Math.sin(arc.mid) * r * RING_Y * 1.19;
-      const label = arc.ns + " · " + arc.count;
+  function drawShellLabels() {
+    const cx = W / 2, cy = H / 2;
+    for (const shell of arcs) {
+      // Pinned to a fixed point on the shell rather than following any
+      // particular workload: a caption that moved would be unreadable, and
+      // unclickable.
+      const [lx0, ly0] = orbitXY(shell, shell.labelTheta);
+      const ox = lx0 - cx, oy = ly0 - cy;
+      const len = Math.hypot(ox, oy) || 1;
+      const lx = cx + (ox / len) * (len + 26), ly = cy + (oy / len) * (len + 26);
+
+      // A leader line back to the orbit it names. With seven inclined ellipses
+      // crossing each other, a caption floating near the outside is ambiguous —
+      // measured on the real cluster, you cannot tell which ring "longhorn-system"
+      // belongs to. The line costs two pixels and removes the guess.
+      ctx.strokeStyle = shell.tint + (shell.ns === focusNS ? "99" : "55");
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(lx0, ly0); ctx.lineTo(lx, ly); ctx.stroke();
+
+      const stopped = [...workloads.values()]
+        .filter((w) => w.namespace === shell.ns && visible(w) && stalled(w)).length;
+      const label = shell.ns + " · " + shell.count + (stopped ? "  ⏸" + stopped : "");
+
       ctx.font = "10px ui-monospace,Menlo,monospace";
       const right = lx >= cx;
       ctx.textAlign = right ? "left" : "right";
       const tw = ctx.measureText(label).width;
-      arc.hit = { x: lx, y: ly, w: tw, right };
+      shell.hit = { x: lx, y: ly, w: tw, right };
 
       ctx.fillStyle = "rgba(7,10,15,0.78)";
       ctx.fillRect(right ? lx - 4 : lx - tw - 4, ly - 8, tw + 8, 16);
-      ctx.fillStyle = arc.ns === focusNS ? "#e6eefc" : arc.tint;
+      ctx.fillStyle = shell.ns === focusNS ? "#e6eefc" : (stopped ? "#ff8a95" : shell.tint);
       ctx.fillText(label, lx, ly + 3.5);
     }
   }
@@ -377,30 +479,74 @@
     return i >= 0 ? name.slice(i + 1) : name;
   }
 
-  function drawWorkloads(now) {
-    // Labels cannot all fit. Measured on a real 24-workload cluster: 3858px of
-    // text around a 2565px ring. So label what a viewer is looking for —
-    // anything unhealthy, anything that just did something, the selection, and
-    // whatever the pointer is near — and leave the quiet majority as dots.
+  // TRAIL_N segments of wake behind each moving particle. Enough to read as
+  // motion at a glance; few enough that two dozen of them stay cheap.
+  const TRAIL_N = 8, TRAIL_STEP = 0.055;
+
+  // drawWorkloads runs twice per frame — once for the half of each orbit behind
+  // the globe, once for the half in front — so the globe occludes what is behind
+  // it. `front` selects which pass this is.
+  function drawWorkloads(now, front) {
     for (const w of workloads.values()) {
-      if (!visible(w)) continue;
+      if (!visible(w) || !w.shell) continue;
+      const z = orbitDepth(w.angle);
+      if ((z >= 0) !== front) continue;
+
       const [x, y] = workloadXY(w);
-      const unhealthy = (w.problems || 0) > 0;
+      const stopped = stalled(w);
       // Pods that finished successfully are not missing replicas. Without this a
       // completed Job reads as a permanently degraded workload.
       const serving = (w.pods || 0) - (w.done || 0);
       const degraded = serving > 0 && (w.ready || 0) < serving;
       const active = w.lit && now - w.lit < 6000;
       const hovered = hover === w.key, chosen = selected === w.key;
-      const rad = nodeRadius(w);
+
+      // Perspective: nearer particles are bigger and brighter. Applied to the
+      // radius rather than to a scale transform so hit-testing stays honest.
+      const near = (z + 1) / 2;
+      const depthScale = 0.74 + near * 0.34;
+      const rad = nodeRadius(w) * depthScale;
+      const dim = front ? 1 : 0.45 + near * 0.25;
 
       let color = "#4d6480";
-      if (unhealthy) color = "#ff4d5e";
+      if (stopped) color = "#ff4d5e";
       else if (degraded) color = "#ffab3d";
 
-      if (unhealthy || active) {
+      // The wake. A stopped workload has none, and its absence is the signal:
+      // every neighbour is a comet and this one is a full stop.
+      if (!stopped && !STILL) {
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        for (let i = 1; i <= TRAIL_N; i++) {
+          const t = w.angle - i * TRAIL_STEP * Math.sign(w.shell.speed);
+          const [tx2, ty2] = orbitXY(w.shell, t);
+          const k = 1 - i / (TRAIL_N + 1);
+          ctx.globalAlpha = k * k * 0.5 * dim;
+          ctx.fillStyle = color;
+          ctx.beginPath(); ctx.arc(tx2, ty2, rad * k * 0.72, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+        ctx.globalAlpha = 1;
+      }
+
+      // A dark disc under the particle, so one crossing the globe's dot field
+      // still reads as a distinct object rather than a bright patch of surface.
+      if (front) {
+        ctx.fillStyle = "rgba(7,10,15,0.72)";
+        ctx.beginPath(); ctx.arc(x, y, rad + 2.4, 0, Math.PI * 2); ctx.fill();
+      }
+
+      if (stopped) {
+        // Two static rings rather than a pulse. A stopped thing that throbs
+        // still reads as alive, which is exactly the wrong impression.
+        ctx.strokeStyle = "rgba(255,77,94,0.55)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(x, y, rad + 5, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = "rgba(255,77,94,0.22)";
+        ctx.beginPath(); ctx.arc(x, y, rad + 9.5, 0, Math.PI * 2); ctx.stroke();
+      } else if (active) {
         const pulse = rad + 5 + Math.sin(now / 380) * 2;
-        ctx.strokeStyle = unhealthy ? "rgba(255,77,94,0.30)" : "rgba(120,200,255,0.30)";
+        ctx.strokeStyle = `rgba(120,200,255,${(0.30 * dim).toFixed(3)})`;
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(x, y, pulse, 0, Math.PI * 2); ctx.stroke();
       }
@@ -410,10 +556,16 @@
         ctx.beginPath(); ctx.arc(x, y, rad + 4, 0, Math.PI * 2); ctx.stroke();
       }
 
+      ctx.globalAlpha = dim;
       ctx.fillStyle = color;
       ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
 
-      if (!(unhealthy || degraded || active || hovered || chosen)) continue;
+      // Labels cannot all fit — measured on a real 24-workload cluster, 3858px
+      // of text around a 2565px ring. So label what a viewer is looking for:
+      // anything stopped or degraded, anything that just did something, the
+      // selection, and whatever the pointer is near.
+      if (!(stopped || degraded || active || hovered || chosen)) continue;
 
       const label = shortName(w.name) + (w.pods > 1 ? " ×" + w.pods : "");
       const right = x >= W / 2;
@@ -424,7 +576,8 @@
       const tw = ctx.measureText(label).width;
       ctx.fillStyle = "rgba(7,10,15,0.72)";
       ctx.fillRect(right ? tx - 3 : tx - tw - 3, y - 7, tw + 6, 14);
-      ctx.fillStyle = (hovered || chosen) ? "#e6eefc" : "rgba(200,212,228,0.78)";
+      ctx.fillStyle = stopped ? "#ffb3ba"
+                    : (hovered || chosen) ? "#e6eefc" : "rgba(200,212,228,0.78)";
       ctx.fillText(label, tx, y + 3.5);
     }
   }
@@ -507,14 +660,25 @@
     ctx.globalAlpha = 1;
   }
 
+  let lastFrame = 0;
   function frame() {
-    ctx.clearRect(0, 0, W, H);
     const now = performance.now();
+    // Clamped: a backgrounded tab stops receiving frames, and without this the
+    // first frame back would jump every orbit by however long you were away.
+    const dt = lastFrame ? Math.min(now - lastFrame, 120) : 16;
+    lastFrame = now;
+    advance(dt);
+
+    ctx.clearRect(0, 0, W, H);
+    drawShells();
+    // Back half first, then the globe over it, then the front half — which is
+    // what turns a flat ellipse into something going round the sphere.
+    drawWorkloads(now, false);
     drawGlobe();
     drawHeartbeat(now);
-    drawArcs();
     drawWires(now);
-    drawWorkloads(now);
+    drawWorkloads(now, true);
+    drawShellLabels();
     requestAnimationFrame(frame);
   }
 
@@ -585,6 +749,9 @@
     return best;
   }
 
+  // Hit-testing a moving target. The node radius already grows with depth, so
+  // the generous 20px slop here is what keeps a particle clickable while it is
+  // on the far side of its orbit and drawn small.
   function arcLabelAt(mx, my) {
     for (const a of arcs) {
       const h = a.hit;
@@ -678,7 +845,8 @@
   window.__podsmedicNodes = () =>
     [...workloads.values()].filter(visible).map((w) => {
       const [x, y] = workloadXY(w);
-      return { key: w.key, x, y };
+      return { key: w.key, x, y, angle: w.angle, stalled: stalled(w),
+               shell: w.shell ? w.shell.ns : null };
     });
 
   resize();

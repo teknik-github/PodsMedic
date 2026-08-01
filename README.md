@@ -802,6 +802,26 @@ It still speaks plain HTTP: there is no certificate to manage for something reac
 over a port-forward. On an untrusted network, port-forward remains the intended
 route, and there is no Service and no Ingress for it on purpose.
 
+### Reading the orbits
+
+Each namespace is an orbital shell — a tilted ellipse at its own radius, running at its own
+speed, some clockwise and some not. Every workload rides its namespace's shell and passes in
+front of the globe on one half of the orbit and behind it on the other.
+
+**A workload with an open problem stops.** It holds its position, drops its wake, and gains two
+static rings, while everything else on the same shell keeps orbiting past it. That is the
+signal the page is built around: colour needs you to be looking at it, whereas one motionless
+dot in a field of moving ones is caught by peripheral vision — which is what you actually have
+spare while doing something else. The stop is reserved for real failures; a workload that is
+merely degraded but still serving keeps moving.
+
+A stopped node never pulses, only the healthy-but-active ones do. Something throbbing reads as
+alive, which is precisely the wrong impression for a halt. Namespaces that contain a stopped
+workload say so in their caption (`oom-test · 4  ⏸3`).
+
+If your system asks for reduced motion, the orbits hold still. Colour and the halo carry the
+state on their own — which is also why the stop is never the *only* cue.
+
 ### This is the one thing that watches
 
 Everything podsmedic *does* stays on its sweep interval, because diagnosis, healing
