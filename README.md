@@ -110,6 +110,18 @@ Its hero is not a screenshot or a video: it is the live view's own mechanic
 reimplemented in miniature, so "a failing workload stops orbiting" can be tried rather
 than described.
 
+### Serving it with Docker
+
+```bash
+docker compose up -d      # http://localhost:8090
+WEB_PORT=8091 docker compose up -d   # when 8090 is taken
+```
+
+`docker-compose.yml` serves `docs/` and nothing else — there is deliberately no Compose
+service for the agent, which needs a Kubernetes API and a ServiceAccount whose narrow
+permissions are half the safety argument. The page is mounted read-only, so editing
+`docs/` and reloading is enough; there is nothing to rebuild.
+
 ## Quick start (local)
 
 ```bash

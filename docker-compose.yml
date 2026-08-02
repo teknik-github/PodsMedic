@@ -1,0 +1,52 @@
+# Serves the PodsMedic landing page in docs/ — and nothing else.
+#
+# There is deliberately no service here for the agent itself. podsmedic reads
+# pods, nodes and events through the Kubernetes API under a ServiceAccount whose
+# narrow permissions are half the safety argument; running it from Compose would
+# mean handing it a kubeconfig with whatever rights you happen to have, which is
+# the opposite of that. Deploy it with deploy/*.yaml instead.
+#
+#   docker compose up -d          # http://localhost:8090
+#   docker compose down
+#
+# The page is mounted read-only rather than baked into an image, so editing
+# docs/ and reloading is enough — there is nothing to rebuild.
+
+services:
+  website:
+    # The unprivileged variant, not stock nginx. Stock nginx's entrypoint chowns
+    # its cache directories as root at startup, which fails outright once
+    # capabilities are dropped — it crash-looped with
+    # `chown("/var/cache/nginx/client_temp") failed (Operation not permitted)`.
+    # This image already runs as UID 101 and writes only under /tmp.
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    container_name: podsmedic-website
+    # Override when 8090 is taken:  WEB_PORT=8091 docker compose up -d
+    ports:
+      - "${WEB_PORT:-8090}:8080"
+    volumes:
+      - ./docs:/usr/share/nginx/html:ro
+      - ./deploy/website/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+    # Static files need no privileges at all, so it gets none.
+    read_only: true
+    tmpfs:
+      # Everything nginx writes — pid file, temp bodies — lives here in this
+      # image, so one tmpfs is the whole writable surface.
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    # Serving three static files needs no capabilities whatsoever.
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
