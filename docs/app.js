@@ -10,8 +10,26 @@
 (() => {
   "use strict";
 
-  const REDUCED = window.matchMedia &&
-                  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const SYSTEM_REDUCED = !!(window.matchMedia &&
+                            window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const MOTION_KEY = "podsmedic.promo.motion";
+
+  // The hero orbit animates by default, including under prefers-reduced-motion.
+  //
+  // That is a deliberate exception, not an oversight — the first version of this
+  // page froze solid on a reduced-motion system and simply looked broken. The
+  // distinction that matters is between motion that *carries meaning* and motion
+  // that merely decorates. This canvas is the page's entire argument: a workload
+  // stops orbiting when it fails. Removing it removes the content.
+  //
+  // What reduced-motion still switches off is everything decorative — the
+  // scroll-triggered reveals below, which slide content around while you are
+  // trying to read it, and which are exactly the kind of effect the setting
+  // exists for. And the orbit is pausable, visibly, from a control next to it.
+  function storedMotion() {
+    try { return localStorage.getItem(MOTION_KEY); } catch (e) { return null; }
+  }
+  let motion = storedMotion() ? storedMotion() === "on" : true;
 
   /* ── orbit animation ──────────────────────────────────────────────────── */
 
@@ -239,7 +257,7 @@
 
         // The wake. A stopped workload has none, and its absence is the point:
         // every neighbour is a comet and this one is a full stop.
-        if (!w.stalled && !REDUCED) {
+        if (!w.stalled && motion) {
           ctx.save();
           ctx.globalCompositeOperation = "lighter";
           for (let i = 1; i <= 8; i++) {
@@ -278,7 +296,7 @@
     function frame(ts) {
       const dt = last ? Math.min(ts - last, 120) : 16;
       last = ts;
-      if (!REDUCED) {
+      if (motion) {
         clock += dt;
         // Roughly one rotation every 22 seconds. The first attempt used a rate
         // taken straight from the product, where the globe is background to a
@@ -324,7 +342,7 @@
         // recovery is podsmedic confirming the workload came back. Same
         // grammar as the product — inbound is the cluster talking, outbound is
         // podsmedic acting.
-        if (!REDUCED) {
+        if (motion) {
           spawnWire(i, on ? { colour: COLOUR.bad, out: false }
                           : { colour: "#38d996", out: true });
         }
@@ -358,6 +376,24 @@
 
   const crashBtn = document.getElementById("crash-btn");
   const demoStatus = document.getElementById("demo-status");
+  const motionBtn = document.getElementById("motion-btn");
+
+  if (motionBtn) {
+    const renderMotionBtn = () => {
+      motionBtn.textContent = motion ? "Pause motion" : "Resume motion";
+      motionBtn.setAttribute("aria-pressed", String(!motion));
+      motionBtn.title = SYSTEM_REDUCED && motion
+        ? "Your system asks for reduced motion. This canvas is the page's actual "
+          + "content rather than decoration, so it still runs — pause it here."
+        : "";
+    };
+    motionBtn.addEventListener("click", () => {
+      motion = !motion;
+      try { localStorage.setItem(MOTION_KEY, motion ? "on" : "off"); } catch (e) { /* private mode */ }
+      renderMotionBtn();
+    });
+    renderMotionBtn();
+  }
 
   function reportDemo() {
     if (!demoStatus || !hero) return;
@@ -453,7 +489,7 @@
   /* ── reveal on scroll ─────────────────────────────────────────────────── */
 
   const revealables = document.querySelectorAll(".reveal");
-  if (!("IntersectionObserver" in window) || REDUCED) {
+  if (!("IntersectionObserver" in window) || SYSTEM_REDUCED) {
     // No observer, or the viewer asked for less motion: show everything at
     // once. Content must never depend on an effect to become readable.
     revealables.forEach((el) => el.classList.add("shown"));
