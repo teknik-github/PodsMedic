@@ -100,6 +100,16 @@ the *shape* — so the schema is spelled out in the prompt and validated on pars
 (`internal/llm/openai.go`). `PODSMEDIC_EFFORT` applies to Anthropic only;
 `deepseek-reasoner` does its own reasoning without a knob.
 
+## Landing page
+
+`docs/` holds a standalone promotional page — `index.html`, `styles.css`, `app.js`, no
+build step and no external requests. Open it directly, or turn it on in
+**Settings -> Pages -> Source: main /docs** to publish it.
+
+Its hero is not a screenshot or a video: it is the live view's own mechanic
+reimplemented in miniature, so "a failing workload stops orbiting" can be tried rather
+than described.
+
 ## Quick start (local)
 
 ```bash

@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PodsMedic — an SRE agent that diagnoses and heals failing pods</title>
+<meta name="description" content="PodsMedic watches a Kubernetes cluster, gathers the evidence a human would, asks an LLM what went wrong, and applies bounded, verified, reversible fixes — behind a safety boundary that treats every model answer as untrusted input.">
+<meta name="color-scheme" content="dark">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="PodsMedic — an SRE agent for Kubernetes">
+<meta property="og:description" content="Diagnoses failing pods with an LLM, then applies only the fixes a pure validator can re-derive from live cluster state. Verified, reversible, and bounded by real capacity.">
+<meta property="og:url" content="https://github.com/teknik-github/PodsMedic">
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='7' fill='%234aa8ff'/><circle cx='27' cy='9' r='3' fill='%23ff4d5e'/></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site" id="top">
+  <a class="brand" href="#top" aria-label="PodsMedic home">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">PodsMedic</span>
+  </a>
+  <nav class="site-nav" aria-label="Sections">
+    <a href="#how">How it works</a>
+    <a href="#trust">Safety</a>
+    <a href="#scope">What it fixes</a>
+    <a href="#view">Live view</a>
+    <a href="#chat">Chat</a>
+    <a href="#start">Get started</a>
+  </nav>
+  <a class="btn btn-ghost nav-cta" href="https://github.com/teknik-github/PodsMedic">GitHub</a>
+  <button class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="site-nav-mobile">
+    <span class="sr-only">Menu</span>
+    <span class="bars" aria-hidden="true"></span>
+  </button>
+</header>
+
+<nav class="site-nav-mobile" id="site-nav-mobile" aria-label="Sections" hidden>
+  <a href="#how">How it works</a>
+  <a href="#trust">Safety</a>
+  <a href="#scope">What it fixes</a>
+  <a href="#view">Live view</a>
+  <a href="#chat">Chat</a>
+  <a href="#start">Get started</a>
+  <a href="https://github.com/teknik-github/PodsMedic">GitHub</a>
+</nav>
+
+<main id="main">
+
+  <!-- ── hero ──────────────────────────────────────────────────────────── -->
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">Kubernetes SRE agent · Go · self-hosted</p>
+      <h1>Your cluster tells you it is broken.<br><span class="accent">PodsMedic tells you why.</span></h1>
+      <p class="lede">
+        It watches for failing pods, gathers the evidence a human would —
+        <code>describe</code>, events, logs, node capacity — and asks an LLM what went wrong.
+        Then, if you let it, it applies the fix, checks whether the fix held, and rolls it
+        back if it did not.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#start">Get started</a>
+        <a class="btn btn-ghost" href="https://github.com/teknik-github/PodsMedic">Read the source</a>
+      </div>
+      <p class="fineprint">
+        Self-hosted · stdlib + <code>client-go</code> + one model SDK · no agent sidecars,
+        no SaaS, nothing leaves your cluster but the evidence you configure.
+      </p>
+    </div>
+
+    <figure class="hero-demo">
+      <canvas id="orbit" aria-hidden="true"></canvas>
+      <figcaption>
+        <p class="demo-caption">
+          <strong>Every workload orbits. A failing one stops.</strong>
+          This is the real mechanic from the built-in live view — a motionless dot among
+          moving ones is caught by peripheral vision, which colour alone never is.
+        </p>
+        <button class="btn btn-small" id="crash-btn" type="button">Simulate a failure</button>
+        <span class="demo-status" id="demo-status" role="status">3 workloads orbiting</span>
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ── sample alert ──────────────────────────────────────────────────── -->
+  <section class="band" id="alert-band">
+    <div class="wrap narrow">
+      <h2 class="section-title">What lands in your chat</h2>
+      <div class="alert-card reveal">
+        <p class="alert-head"><span class="dot" aria-hidden="true"></span>
+          Pod <code>web-7d9f</code> OOMKilled — memory limit too small for the workload</p>
+        <p class="alert-meta"><code>api/web-7d9f</code> · container <code>web</code> · OOMKilled · confidence high</p>
+        <p class="alert-body">
+          The container is killed with exit code 137 roughly every four minutes because its
+          128Mi memory limit is below the ~210Mi the JVM heap settles at under load.
+          Raise the limit to 256Mi.
+        </p>
+        <p class="alert-action"><span class="tag tag-heal">healed</span>
+          memory limit 128Mi → 256Mi on <code>Deployment/web</code> · verified after 10m · no recurrence</p>
+      </div>
+      <p class="aside">
+        Plain language, not a stack trace. The change, if it made one, is named — and so is
+        whether it held.
+      </p>
+    </div>
+  </section>
+
+  <!-- ── pipeline ──────────────────────────────────────────────────────── -->
+  <section class="wrap" id="how">
+    <h2 class="section-title">One loop, once per interval</h2>
+    <p class="section-lede">
+      Nothing here is event-driven except the display. Healing is deliberately paced, because
+      a repair loop that reacts instantly is a repair loop that can thrash a cluster instantly.
+    </p>
+
+    <ol class="pipeline">
+      <li class="reveal"><span class="step">1</span>
+        <h3>Detect</h3>
+        <p>OOM kills, crash loops, image-pull failures, unschedulable pods, restart storms,
+           stuck volumes, unbound claims. Plus prediction: memory trending into an OOM is
+           flagged <em>before</em> the kill.</p></li>
+      <li class="reveal"><span class="step">2</span>
+        <h3>Correlate</h3>
+        <p>Symptoms are grouped into one incident, so a pod failing five ways is one alert
+           and one diagnosis — not five.</p></li>
+      <li class="reveal"><span class="step">3</span>
+        <h3>Collect</h3>
+        <p>Events, logs, container spec, probes, volume claims, node conditions, and the
+           cluster's real headroom. Environment variable <em>names</em> only — never values.</p></li>
+      <li class="reveal"><span class="step">4</span>
+        <h3>Diagnose</h3>
+        <p>The model returns a schema-constrained answer: what broke, why, and a proposed
+           action. Or the playbook answers it for free — see below.</p></li>
+      <li class="reveal"><span class="step">5</span>
+        <h3>Validate</h3>
+        <p>A pure function re-derives a bounded plan from live cluster state, or refuses.
+           This is the part that matters, and it has its own section.</p></li>
+      <li class="reveal"><span class="step">6</span>
+        <h3>Verify</h3>
+        <p>A later sweep re-checks the workload. If it did not recover, the change is rolled
+           back and the remedy is forgotten.</p></li>
+    </ol>
+  </section>
+
+  <!-- ── trust boundary ────────────────────────────────────────────────── -->
+  <section class="band band-edge" id="trust">
+    <div class="wrap">
+      <p class="eyebrow">The part worth reading</p>
+      <h2 class="section-title">Pod logs reach the model. So the model is untrusted.</h2>
+      <div class="split">
+        <div>
+          <p>
+            Anything an attacker can write to a log, they can say to the LLM. That makes every
+            answer it returns — including its proposed fix — untrusted input, and no amount of
+            prompt wording changes it.
+          </p>
+          <p>
+            So the model's proposal is never applied. It is handed to
+            <code>heal.Validate</code>, a pure function with no cluster access, which
+            re-derives a bounded plan from the current state of your cluster or refuses
+            outright. It is exhaustively unit-tested, and every rule below is a test that
+            fails loudly if someone loosens it.
+          </p>
+          <p class="aside">
+            Replica counts are never taken from the model either. They are computed from
+            measured load with the same formula an HPA uses; the model may only lower the
+            result, never raise it.
+          </p>
+        </div>
+        <ul class="rules">
+          <li><b>Values only ever increase.</b> The worst case of a wrong answer is a workload with too much.</li>
+          <li><b>Absolute and relative caps.</b> Nothing grows past your ceiling, or past a multiple of what it had.</li>
+          <li><b>Image tags only.</b> Repository and registry are pinned; the model cannot repoint an image.</li>
+          <li><b>Probes loosen, never tighten.</b></li>
+          <li><b>Capacity is physics, not policy.</b> Headroom is bin-packed per node — a pod fits on one node, so cluster-wide sums lie. Pod slots count. A reserve is held back.</li>
+          <li><b>No capacity reading, no scaling.</b> It refuses rather than guessing a default.</li>
+          <li><b>An HPA forbids scaling outright.</b> Two controllers writing <code>replicas</code> overwrite each other.</li>
+          <li><b>Namespace allow/deny, kind allowlist, confidence floor.</b></li>
+        </ul>
+      </div>
+
+      <div class="switches reveal">
+        <h3>Two switches, and the middle one is real</h3>
+        <div class="switch-row">
+          <div class="switch"><code>PODSMEDIC_AUTOHEAL=false</code><span>Diagnose and alert. Nothing is proposed.</span></div>
+          <div class="switch"><code>AUTOHEAL=true · HEAL_APPLY=false</code><span>Full validation and a genuine server-side dry run. The API server checks the change; nothing persists.</span></div>
+          <div class="switch on"><code>HEAL_APPLY=true</code><span>Changes are applied, verified, and rolled back on failure.</span></div>
+        </div>
+        <p class="aside">Both default to off. You opt in twice, on purpose.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── scope ─────────────────────────────────────────────────────────── -->
+  <section class="wrap" id="scope">
+    <h2 class="section-title">What it fixes, and what it refuses to</h2>
+    <p class="section-lede">
+      The second column is not a roadmap. Each one is a decision where acting automatically
+      would be more dangerous than the fault.
+    </p>
+    <div class="scope">
+      <div class="scope-col reveal">
+        <h3><span class="tick" aria-hidden="true"></span>Handles automatically</h3>
+        <ul>
+          <li>OOM kills — raises the memory limit within your caps</li>
+          <li>Memory or CPU trending into failure — raises it <em>before</em> the kill</li>
+          <li>Load needing more replicas — derived from measurement, gated on real headroom</li>
+          <li>Probes too aggressive for a slow starter — loosens them</li>
+          <li>A missing PersistentVolumeClaim — creates it from your configured defaults</li>
+          <li>Storage recovered but the pod stuck on a stale mount — restarts it</li>
+          <li>A problem it has fixed before — replays the remedy with no LLM call at all</li>
+        </ul>
+      </div>
+      <div class="scope-col reveal">
+        <h3><span class="cross" aria-hidden="true"></span>Diagnoses, then stops</h3>
+        <ul>
+          <li><b>Application bugs.</b> No resource change fixes wrong logic.</li>
+          <li><b>Wrong or missing config and secrets.</b> It does not know the right value, and guessing one is worse than failing.</li>
+          <li><b>A mistyped image.</b> Letting a model repoint an image is a supply-chain hole opened via a log line.</li>
+          <li><b>Sick nodes.</b> It has no write permission on nodes and must not gain one — draining is a decision far larger than patching a workload.</li>
+          <li><b>Oversized requests.</b> Lowering a request moves the scheduling floor and eviction priority. That call stays with you.</li>
+          <li><b>Mass failure.</b> When many workloads fail at once the cause is usually one thing; healing suspends itself rather than patching thirty controllers blind.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── features ──────────────────────────────────────────────────────── -->
+  <section class="band" id="features">
+    <div class="wrap">
+      <h2 class="section-title">What else is in the box</h2>
+      <div class="grid">
+        <article class="card reveal">
+          <h3>It learns, and it forgets</h3>
+          <p>A fix that is applied and later verified goes into a playbook, and the next
+             occurrence is repaired with no model call — no cost, no latency, same safety
+             checks. A remedy that stops holding is dropped at once, repeat offenders are
+             quarantined, and anything unconfirmed for too long retires so the model
+             re-diagnoses it fresh.</p>
+        </article>
+        <article class="card reveal">
+          <h3>Brakes at two scopes</h3>
+          <p>Per workload: a cooldown and a circuit breaker that suspends healing after
+             repeated rollbacks. Cluster-wide: a per-sweep budget and a surge guard counted
+             over distinct <em>workloads</em>, so one Deployment with thirty crashing replicas
+             stays one failure.</p>
+        </article>
+        <article class="card reveal">
+          <h3>Node health, one stage earlier</h3>
+          <p>Every other signal starts from a pod, so it arrives after the pods have already
+             fallen over. A node reports <code>DiskPressure</code> or <code>NotReady</code>
+             first. Report-only, always.</p>
+        </article>
+        <article class="card reveal">
+          <h3>Rightsizing you apply yourself</h3>
+          <p>Measures real usage against declared requests and suggests corrections — from the
+             observed <em>peak</em> times a headroom factor, never the mean, because a container
+             that idles at 10m and spikes to 900m needs the 900m.</p>
+        </article>
+        <article class="card reveal">
+          <h3>A daily digest, even on quiet days</h3>
+          <p>Every other message is failure-triggered, which leaves "nothing is broken" and
+             "the agent died" looking identical. This one arrives either way, so its absence
+             is itself the signal.</p>
+        </article>
+        <article class="card reveal">
+          <h3>An audit trail and a study document</h3>
+          <p>Every change, dry run, verification and rollback is recorded. Export the whole
+             thing as Markdown or a printable HTML document describing how <em>this</em>
+             cluster actually fails.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── live view ─────────────────────────────────────────────────────── -->
+  <section class="wrap" id="view">
+    <div class="split split-wide">
+      <div>
+        <p class="eyebrow">Built in, off by default</p>
+        <h2 class="section-title">A live view where motion is the signal</h2>
+        <p>
+          Each namespace is an orbital shell; every workload rides it. A workload with an open
+          problem <b>stops dead</b> while its shell-mates keep going past it. Colour needs you
+          to be looking at it. A motionless dot in a field of moving ones does not.
+        </p>
+        <p>
+          It updates in seconds from a pod watch, while everything the agent <em>does</em> stays
+          on its interval. One embedded page, no CDN, no fonts, no libraries — a globe of dots
+          is projection arithmetic, which does not justify a dependency.
+        </p>
+        <ul class="ticks">
+          <li>Token-gated. It <b>refuses to start</b> on a network-reachable address without one.</li>
+          <li>Honours reduced-motion — and says so, instead of looking broken.</li>
+          <li>No Service, no Ingress. <code>kubectl port-forward</code> is the intended route.</li>
+        </ul>
+      </div>
+      <div class="view-shot reveal" aria-hidden="true">
+        <div class="shot-chrome"><span></span><span></span><span></span>
+          <em>podsmedic — live</em></div>
+        <div class="shot-body">
+          <div class="shot-stats">
+            <span>pods <b>30</b></span><span>workloads <b>21</b></span>
+            <span>problems <b>1</b></span><span class="shot-live">feed <b>live</b></span>
+          </div>
+          <canvas id="orbit-shot"></canvas>
+          <div class="shot-feed">
+            <div><i>20:14:07</i> <b class="c-problem">problem</b> Deployment/checkout container "app" is CrashLoopBackOff</div>
+            <div><i>20:14:09</i> <b class="c-diagnose">diagnose</b> evidence collected, asking the model</div>
+            <div><i>20:14:22</i> <b class="c-heal">heal</b> memory 128Mi → 384Mi</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── chat ──────────────────────────────────────────────────────────── -->
+  <section class="band" id="chat">
+    <div class="wrap">
+      <h2 class="section-title">Ask it questions. It will not take orders.</h2>
+      <p class="section-lede">
+        The Telegram channel is two-way, allowlisted, and rate limited. It is also
+        structurally read-only: there is no path from a message to the healer, and the
+        question-answering model is given no action to propose.
+      </p>
+      <div class="split split-wide">
+        <ul class="commands">
+          <li><code>/pods</code><span>Pods and their state. Add a namespace to list it in full.</span></li>
+          <li><code>/status</code><span>What the last sweep found</span></li>
+          <li><code>/incidents</code><span>What is open right now</span></li>
+          <li><code>/capacity</code><span>Headroom exactly as the validator sees it</span></li>
+          <li><code>/nodes</code><span>Health of the machines underneath</span></li>
+          <li><code>/heals</code><span>Recent changes, and whether they held</span></li>
+          <li><code>/playbook</code><span>Remedies it can replay without the model</span></li>
+          <li><code>/rightsize</code><span>Requests that do not match reality</span></li>
+          <li><code>/digest</code><span>Preview today's summary</span></li>
+          <li><code>/export</code><span>The playbook as a document to study</span></li>
+        </ul>
+        <div class="chat-demo reveal">
+          <div class="msg out">why does api/web keep restarting?</div>
+          <div class="msg in">
+            It has restarted 14 times in the last hour, always exit 137 — the kernel OOM
+            killer. Its memory limit is 128Mi and the container settles around 210Mi under
+            load. I raised the limit to 256Mi 20 minutes ago and the change has held since;
+            no restarts after it.
+          </div>
+          <div class="msg out">/capacity</div>
+          <div class="msg in mono">
+            3 nodes schedulable · 4200m CPU, 11.4Gi memory, 74 pod slots free<br>
+            (20% reserve already held back)
+          </div>
+          <p class="chat-note">Every command above is answered from state the sweep already
+            holds — no API call, no tokens. Only free-form questions reach the model.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── quickstart ────────────────────────────────────────────────────── -->
+  <section class="wrap" id="start">
+    <h2 class="section-title">Try it in about a minute</h2>
+    <p class="section-lede">
+      A dry run touches nothing: it reads your current kubectl context and prints what it
+      would say to stdout.
+    </p>
+
+    <div class="steps">
+      <div class="step-card reveal">
+        <h3><span class="step">1</span>Run it locally, changing nothing</h3>
+        <div class="code"><pre><code>export ANTHROPIC_API_KEY=sk-ant-...
+make run</code></pre><button class="copy" type="button">Copy</button></div>
+      </div>
+
+      <div class="step-card reveal">
+        <h3><span class="step">2</span>Point it at a chat</h3>
+        <div class="code"><pre><code>export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+go run ./cmd/podsmedic</code></pre><button class="copy" type="button">Copy</button></div>
+      </div>
+
+      <div class="step-card reveal">
+        <h3><span class="step">3</span>Deploy it to the cluster</h3>
+        <div class="code"><pre><code>kubectl apply -f deploy/config.yaml
+kubectl apply -f deploy/rbac.yaml
+kubectl -n podsmedic create secret generic podsmedic \
+  --from-literal=ANTHROPIC_API_KEY=sk-ant-... \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f deploy/deployment.yaml</code></pre><button class="copy" type="button">Copy</button></div>
+        <p class="aside">
+          Settings and workload are separate files on purpose, so rolling out a new image
+          cannot silently reset every setting you tuned.
+        </p>
+      </div>
+    </div>
+
+    <p class="closing">
+      It starts read-only. Healing is two deliberate switches away, and everything it would
+      have done is printed first.
+    </p>
+    <div class="cta-row center">
+      <a class="btn btn-primary" href="https://github.com/teknik-github/PodsMedic">Get it on GitHub</a>
+      <a class="btn btn-ghost" href="https://github.com/teknik-github/PodsMedic#readme">Read the docs</a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p><b>PodsMedic</b> — an SRE agent for Kubernetes.</p>
+    <p class="dim">
+      Go, <code>client-go</code>, one model SDK, and nothing else. Runs in your cluster under a
+      narrow ServiceAccount that cannot delete anything, cannot read secrets, and cannot write
+      to nodes.
+    </p>
+    <p><a href="https://github.com/teknik-github/PodsMedic">github.com/teknik-github/PodsMedic</a></p>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
