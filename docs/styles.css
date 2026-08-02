@@ -356,6 +356,8 @@ pre code { font-size: 13px; line-height: 1.75; color: #a9c4e0; white-space: pre;
 .site-footer { border-top: 1px solid var(--rule); padding-block: 44px; background: var(--bg-band); }
 .footer-inner { display: grid; gap: 10px; }
 .footer-inner .dim { color: var(--dim); font-size: 14px; max-width: 70ch; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
+.footer-links span { color: var(--rule); }
 
 /* ── reveal on scroll ───────────────────────────────────────────────────── */
 .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }

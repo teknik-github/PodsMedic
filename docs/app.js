@@ -17,6 +17,16 @@
 
   const COLOUR = { ok: "#4d6480", bad: "#ff4d5e", globe: "#7ec4ff" };
 
+  // The event classes the real live view draws wires for, with its colours.
+  // Reusing them means the page is showing the product's own vocabulary rather
+  // than inventing a prettier one.
+  const EVENTS = [
+    { cls: "diagnose", colour: "#4aa8ff", out: true },  // globe → workload
+    { cls: "heal",     colour: "#38d996", out: true },
+    { cls: "verify",   colour: "#7ee0b8", out: true },
+    { cls: "restart",  colour: "#ffab3d", out: false }, // workload → globe
+  ];
+
   // Fibonacci sphere: evenly spaced points with no clustering at the poles.
   function sphere(n) {
     const pts = [], step = Math.PI * (3 - Math.sqrt(5));
@@ -32,7 +42,8 @@
   function createOrbit(canvas, opts) {
     const ctx = canvas.getContext("2d");
     const dots = sphere(opts.dots);
-    let W = 0, H = 0, spin = 0, last = 0;
+    let W = 0, H = 0, spin = 0, last = 0, clock = 0;
+    let wires = [], nextWire = 1200;
 
     // Each shell is one namespace: its own radius, inclination and speed, with
     // alternating direction so crossings keep changing.
@@ -97,6 +108,108 @@
         ctx.arc(cx + x1 * r * k, cy + y2 * r * k, (z2 < 0 ? 0.6 : 0.9 + depth) * k * 0.8, 0, Math.PI * 2);
         ctx.fill();
       }
+    }
+
+    // The heartbeat: a ring that fills once per notional sweep, then pulses.
+    // In the product it exists because a healthy cluster is otherwise a
+    // completely static picture, and "everything is fine" then looks exactly
+    // like "the feed died".
+    function drawHeartbeat() {
+      const cx = W / 2, cy = H / 2, ring = R() * 1.14;
+      const period = 9000;
+      const p = (clock % period) / period;
+
+      ctx.strokeStyle = "rgba(74,168,255,0.10)";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(cx, cy, ring, 0, Math.PI * 2); ctx.stroke();
+
+      ctx.strokeStyle = "rgba(126,196,255,0.40)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, ring, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p);
+      ctx.stroke();
+
+      // A single expanding ring as the sweep lands.
+      const since = clock % period;
+      if (since < 900) {
+        const k = since / 900;
+        ctx.strokeStyle = `rgba(126,196,255,${(0.3 * (1 - k)).toFixed(3)})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(cx, cy, ring + k * R() * 0.8, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+
+    // spawnWire fires one event between the globe and a workload. Direction is
+    // the whole grammar in the real view: outward when podsmedic acts on a
+    // workload, inward when the cluster reports something.
+    function spawnWire(index, event) {
+      const w = workloads[index];
+      if (!w) return;
+      wires.push({ w, colour: event.colour, out: event.out, born: clock,
+                   life: event.out ? 2600 : 2200 });
+      if (wires.length > 14) wires = wires.slice(-14);
+    }
+
+    function drawWires() {
+      const cx = W / 2, cy = H / 2, r = R();
+      wires = wires.filter((wire) => clock - wire.born < wire.life);
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.lineCap = "round";
+
+      for (const wire of wires) {
+        const [x, y] = point(wire.w.shell, wire.w.angle);
+        const p = (clock - wire.born) / wire.life;
+        const fade = p < 0.12 ? p / 0.12 : 1 - (p - 0.12) / 0.88;
+
+        // Start at the globe's limb, not its centre: a line drawn through the
+        // dot field loses its inner half in the noise.
+        const dx = x - cx, dy = y - cy;
+        const len = Math.hypot(dx, dy) || 1;
+        const sx = cx + (dx / len) * r * 1.04, sy = cy + (dy / len) * r * 1.04;
+
+        // Bow it away from centre so overlapping wires stay legible.
+        const mx = (sx + x) / 2, my = (sy + y) / 2;
+        const bow = Math.min(W, H) * 0.05;
+        const bx = mx + (-dy / len) * bow, by = my + (dx / len) * bow;
+
+        const at = (t) => {
+          const u = (1 - t) * (1 - t), v = 2 * (1 - t) * t, s2 = t * t;
+          return [u * sx + v * bx + s2 * x, u * sy + v * by + s2 * y];
+        };
+
+        ctx.strokeStyle = wire.colour;
+        ctx.globalAlpha = 0.08 + fade * 0.18;
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo(bx, by, x, y); ctx.stroke();
+
+        ctx.globalAlpha = 0.18 + fade * 0.6;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo(bx, by, x, y); ctx.stroke();
+
+        // A comet, not a dot: the tail is what makes the direction readable.
+        const q = wire.out ? p : 1 - p;
+        for (let i = 0; i < 5; i++) {
+          const back = i * 0.05 * (wire.out ? 1 : -1);
+          const t = Math.min(Math.max(q - back, 0), 1);
+          const [px, py] = at(t);
+          ctx.globalAlpha = fade * (1 - i / 5) * 0.85;
+          ctx.fillStyle = wire.colour;
+          ctx.beginPath(); ctx.arc(px, py, 3 - i * 0.4, 0, Math.PI * 2); ctx.fill();
+        }
+
+        if (p > 0.82) {
+          const [ex, ey] = wire.out ? [x, y] : [sx, sy];
+          const k = (p - 0.82) / 0.18;
+          ctx.globalAlpha = (1 - k) * 0.5;
+          ctx.strokeStyle = wire.colour;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(ex, ey, 4 + k * 12, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
     }
 
     function drawPaths() {
@@ -166,15 +279,33 @@
       const dt = last ? Math.min(ts - last, 120) : 16;
       last = ts;
       if (!REDUCED) {
-        spin += dt * 0.00006;
+        clock += dt;
+        // Roughly one rotation every 22 seconds. The first attempt used a rate
+        // taken straight from the product, where the globe is background to a
+        // dashboard someone leaves open — here it read as a still image, which
+        // is the opposite of what a landing page needs.
+        spin += dt * 0.00028;
         for (const w of workloads) {
           if (!w.stalled) w.angle = (w.angle + w.shell.speed * dt / 1000) % (Math.PI * 2);
+        }
+        if (opts.events !== false) {
+          nextWire -= dt;
+          if (nextWire <= 0) {
+            const healthy = workloads.map((w, i) => [w, i]).filter(([w]) => !w.stalled);
+            if (healthy.length) {
+              const pick = healthy[Math.floor(Math.random() * healthy.length)][1];
+              spawnWire(pick, EVENTS[Math.floor(Math.random() * EVENTS.length)]);
+            }
+            nextWire = 1600 + Math.random() * 2200;
+          }
         }
       }
       ctx.clearRect(0, 0, W, H);
       drawPaths();
       drawWorkloads(false);
       drawGlobe();
+      drawHeartbeat();
+      drawWires();
       drawWorkloads(true);
       requestAnimationFrame(frame);
     }
@@ -185,7 +316,19 @@
 
     return {
       workloads,
-      stall(i, on) { if (workloads[i]) workloads[i].stalled = on; },
+      stall(i, on) {
+        const w = workloads[i];
+        if (!w) return;
+        w.stalled = on;
+        // Cause before effect: a failure reports itself to the globe, and a
+        // recovery is podsmedic confirming the workload came back. Same
+        // grammar as the product — inbound is the cluster talking, outbound is
+        // podsmedic acting.
+        if (!REDUCED) {
+          spawnWire(i, on ? { colour: COLOUR.bad, out: false }
+                          : { colour: "#38d996", out: true });
+        }
+      },
       stalledCount() { return workloads.filter((w) => w.stalled).length; },
     };
   }

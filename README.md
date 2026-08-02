@@ -1039,3 +1039,9 @@ fight over the queue, and Telegram answers the loser with a 409.
 It needs the `Role` in `deploy/rbac.yaml` granting `get`/`create`/`update` on `leases` in
 podsmedic's own namespace. That is the only object podsmedic writes with auto-heal disabled, and
 it names only itself. Watch `podsmedic_leader`: summed across pods it must be exactly 1.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE). Use it, change it, run it commercially;
+the licence carries an express patent grant and asks only that you keep the notices
+and state what you changed.
